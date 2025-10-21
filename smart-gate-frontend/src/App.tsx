@@ -150,14 +150,23 @@ function App() {
   };
 
   // Управление воротами
+  const [gateTriggering, setGateTriggering] = useState(false);
+  
   const triggerGate = async () => {
+    if (gateTriggering) return; // Предотвращаем двойной клик
+    
+    setGateTriggering(true);
     try {
       await apiCall('/api/gate/trigger', 'POST');
       setNotification('Сигнал отправлен');
-      addLog('⚡ Сигнал на ворота отправлен', 'success');
     } catch (error) {
       setNotification('Ошибка отправки сигнала');
       addLog('❌ Ошибка отправки сигнала', 'error');
+    } finally {
+      // Разрешаем следующий клик через 1 секунду
+      setTimeout(() => {
+        setGateTriggering(false);
+      }, 1000);
     }
   };
 
@@ -269,8 +278,12 @@ function App() {
         <div className="gate-control">
           <h2>🚪 Управление воротами</h2>
           <div className="button-group">
-            <button className="btn btn-gate" onClick={triggerGate}>
-              ⚡ Активировать ворота
+            <button 
+              className="btn btn-gate" 
+              onClick={triggerGate}
+              disabled={gateTriggering}
+            >
+              {gateTriggering ? '⏳ Отправка...' : '⚡ Активировать ворота'}
             </button>
           </div>
         </div>

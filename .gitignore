@@ -17,10 +17,12 @@
 *.pyc
 __pycache__/
 smart-gate-frontend/node_modules/*
+data/
 # Logs
 *.log
 
 # Temporary files
 *.tmp
 *.bak
+
 
