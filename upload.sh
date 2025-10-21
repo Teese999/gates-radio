@@ -31,8 +31,29 @@ fi
 echo "✓ ESP32 обнаружен на порту: $ESP32_PORT"
 echo ""
 
-# Сборка проекта
-echo "🔨 Сборка проекта..."
+# Сборка React приложения
+echo "⚛️  Сборка React приложения..."
+cd smart-gate-frontend
+npm run build
+if [ $? -ne 0 ]; then
+    echo "❌ Ошибка сборки React!"
+    exit 1
+fi
+echo "✓ React приложение собрано"
+echo ""
+
+# Копирование в data
+echo "📦 Копирование файлов в data/..."
+cd ..
+rm -rf data/*
+cp -r smart-gate-frontend/build/* data/
+rm -f data/asset-manifest.json data/robots.txt data/manifest.json data/favicon.ico data/logo*.png
+rm -f data/static/css/*.map data/static/js/*.map data/static/js/*.LICENSE.txt
+echo "✓ Файлы скопированы"
+echo ""
+
+# Сборка прошивки ESP32
+echo "🔨 Сборка прошивки ESP32..."
 platformio run
 
 if [ $? -ne 0 ]; then
@@ -48,18 +69,32 @@ echo "📤 Загрузка прошивки на ESP32..."
 platformio run --target upload --upload-port $ESP32_PORT
 
 if [ $? -ne 0 ]; then
-    echo "❌ Ошибка загрузки!"
+    echo "❌ Ошибка загрузки прошивки!"
+    exit 1
+fi
+echo "✓ Прошивка загружена"
+echo ""
+
+# Загрузка файлов в SPIFFS
+echo "📁 Загрузка файлов в SPIFFS..."
+platformio run --target uploadfs
+
+if [ $? -ne 0 ]; then
+    echo "❌ Ошибка загрузки файлов!"
     exit 1
 fi
 
 echo ""
 echo "=================================================="
-echo "  ✅ Прошивка успешно загружена!"
+echo "  ✅ Загрузка завершена!"
 echo "=================================================="
 echo ""
-echo "Для просмотра логов выполните:"
+echo "📱 Подключение:"
+echo "  WiFi: SmartGate-Config"
+echo "  Пароль: 12345678"
+echo "  Адрес: http://smartgate.local"
+echo "  Или: http://192.168.4.1"
+echo ""
+echo "📊 Для просмотра логов:"
 echo "  platformio device monitor --port $ESP32_PORT --baud 115200"
 echo ""
-
-
-

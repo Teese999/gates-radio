@@ -1,0 +1,245 @@
+/* WiFi Page Styles */
+
+.page-container {
+  width: 100%;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 12px;
+  gap: 10px;
+}
+
+.page-header h2 {
+  margin: 0;
+  color: #2c3e50;
+  flex: 1;
+  text-align: center;
+}
+
+.btn-back {
+  background: #6c757d;
+  color: white;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9em;
+  font-weight: 600;
+  transition: all 0.3s ease;
+}
+
+.btn-back:hover {
+  background: #5a6268;
+  transform: translateX(-2px);
+}
+
+.btn-primary {
+  background: #3498db;
+  padding: 8px 16px;
+  font-size: 0.9em;
+}
+
+.networks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.network-item {
+  display: flex;
+  align-items: center;
+  padding: 15px;
+  background: white;
+  border-radius: 12px;
+  border-left: 4px solid #3498db;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.network-item:hover {
+  transform: translateX(5px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.network-item.signal-strong {
+  border-left-color: #27ae60;
+}
+
+.network-item.signal-medium {
+  border-left-color: #f39c12;
+}
+
+.network-item.signal-weak {
+  border-left-color: #e74c3c;
+}
+
+.network-icon {
+  font-size: 2em;
+  margin-right: 15px;
+}
+
+.network-info {
+  flex: 1;
+}
+
+.network-ssid {
+  font-size: 1.2em;
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 5px;
+}
+
+.network-details {
+  display: flex;
+  gap: 15px;
+  font-size: 0.9em;
+  color: #7f8c8d;
+}
+
+.network-rssi {
+  font-weight: 500;
+}
+
+.network-security {
+  font-weight: 500;
+}
+
+.network-arrow {
+  font-size: 1.5em;
+  color: #3498db;
+  font-weight: bold;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: #7f8c8d;
+}
+
+.empty-state p:first-child {
+  font-size: 1.2em;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+/* Password Modal */
+.password-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  animation: fadeIn 0.3s ease;
+}
+
+.password-modal-content {
+  background: white;
+  padding: 30px;
+  border-radius: 15px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.3s ease;
+}
+
+.password-modal-content h3 {
+  color: #2c3e50;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.password-input {
+  width: 100%;
+  padding: 12px;
+  font-size: 1em;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  box-sizing: border-box;
+  transition: border-color 0.3s ease;
+}
+
+.password-input:focus {
+  outline: none;
+  border-color: #3498db;
+}
+
+.password-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.password-buttons .btn {
+  flex: 1;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Адаптивность */
+@media (max-width: 768px) {
+  .page-header {
+    flex-wrap: wrap;
+  }
+  
+  .page-header h2 {
+    width: 100%;
+    order: -1;
+    margin-bottom: 10px;
+  }
+  
+  .network-item {
+    padding: 12px;
+  }
+  
+  .network-icon {
+    font-size: 1.5em;
+    margin-right: 10px;
+  }
+  
+  .network-ssid {
+    font-size: 1em;
+  }
+  
+  .network-details {
+    flex-direction: column;
+    gap: 5px;
+  }
+  
+  .password-modal-content {
+    padding: 20px;
+  }
+  
+  .password-buttons {
+    flex-direction: column;
+  }
+}
