@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import './App.css';
 import WiFiPage from './pages/WiFiPage';
 import PhonePage from './pages/PhonePage';
+import KeyPage from './pages/KeyPage';
 
 // WebSocket подключение
 const WS_URL = window.location.hostname === 'smartgate.local' 
@@ -51,9 +52,13 @@ function App() {
         break;
       case 'key_received':
         setRecentKeys(prev => [data.data, ...prev.slice(0, 9)]);
-        setKeyCount(prev => prev + 1);
         setNotification(`Получен ключ: ${data.data.key}`);
-        addLog(`🔑 Получен ключ: ${data.data.key} (протокол: ${data.data.protocol})`, 'success');
+        addLog(`🔑 Получен ключ: ${data.data.key} (протокол: ${data.data.protocol})`, 'info');
+        break;
+      case 'key_added':
+        setKeyCount(prev => prev + 1);
+        setNotification(`Добавлен новый ключ: ${data.data.name}`);
+        addLog(`🔑 Добавлен новый ключ: ${data.data.name}`, 'success');
         break;
       case 'wifi_status':
         console.log('WiFi Status Update:', data.data);
@@ -220,11 +225,11 @@ function App() {
     return (
       <div className="App">
         <div className="container">
-          <div className="page-header">
-            <button className="btn-back" onClick={() => setCurrentPage('home')}>← Назад</button>
-            <h2>🔑 Управление ключами 433MHz</h2>
-          </div>
-          <p>В разработке...</p>
+          <KeyPage 
+            onBack={() => setCurrentPage('home')}
+            apiCall={apiCall}
+            addLog={addLog}
+          />
         </div>
       </div>
     );
