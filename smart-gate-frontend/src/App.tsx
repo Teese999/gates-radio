@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
 import WiFiPage from './pages/WiFiPage';
+import PhonePage from './pages/PhonePage';
 
 // WebSocket подключение
 const WS_URL = window.location.hostname === 'smartgate.local' 
@@ -205,11 +206,11 @@ function App() {
     return (
       <div className="App">
         <div className="container">
-          <div className="page-header">
-            <button className="btn-back" onClick={() => setCurrentPage('home')}>← Назад</button>
-            <h2>📱 Управление телефонами</h2>
-          </div>
-          <p>В разработке...</p>
+          <PhonePage 
+            onBack={() => setCurrentPage('home')}
+            apiCall={apiCall}
+            addLog={addLog}
+          />
         </div>
       </div>
     );

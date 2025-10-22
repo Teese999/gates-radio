@@ -128,5 +128,16 @@ namespace RF433Receiver {
     
     Serial.printf("[RF433Receiver] Ключи сохранены в NVS: %d\n", keyCount);
   }
+  
+  int getKeyCount() {
+    return keyCount;
+  }
+  
+  unsigned long getKey(int index) {
+    if (index >= 0 && index < keyCount) {
+      return trustedKeys[index];
+    }
+    return 0;
+  }
 }
 

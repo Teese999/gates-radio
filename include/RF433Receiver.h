@@ -52,6 +52,19 @@ namespace RF433Receiver {
    * Сохранение ключей в NVS
    */
   void saveKeys();
+  
+  /**
+   * Получение количества сохраненных ключей
+   * @return количество ключей
+   */
+  int getKeyCount();
+  
+  /**
+   * Получение ключа по индексу
+   * @param index - индекс ключа
+   * @return код ключа или 0 если индекс неверный
+   */
+  unsigned long getKey(int index);
 }
 
 #endif // RF433_RECEIVER_H

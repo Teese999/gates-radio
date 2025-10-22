@@ -33,7 +33,8 @@ WebSocketsServer webSocket(81); // WebSocket сервер на порту 81
 // --- Структуры данных ---
 struct PhoneEntry {
   String number;
-  int action; // 0=none, 1=sms, 2=ring, 3=both
+  bool smsEnabled;
+  bool callEnabled;
 };
 
 struct WiFiNetwork {
@@ -42,14 +43,24 @@ struct WiFiNetwork {
   int encryption;
 };
 
+// Единая структура состояния системы
+struct SystemState {
+  std::vector<PhoneEntry> phones;
+  std::vector<unsigned long> keys433;
+  String wifiSSID;
+  String wifiPassword;
+  bool wifiConnected;
+};
+
 // --- Хранилище данных ---
-std::vector<PhoneEntry> phones;
-std::vector<unsigned long> keys433;
+SystemState systemState;
 std::vector<WiFiNetwork> wifiNetworks;
 
 // --- Объявления функций ---
 void sendWebSocketEvent(const char* event, const char* data);
 void sendLog(String message, const char* type);
+void saveSystemState();
+void loadSystemState();
 
 // --- WebSocket функции ---
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
@@ -127,9 +138,6 @@ void handleWiFiScan() {
   server.send(200, "application/json", response);
 }
 
-// Глобальные переменные для хранения учетных данных WiFi
-String savedWiFiSSID = "";
-String savedWiFiPassword = "";
 
 // Обработка подключения к WiFi
 void handleWiFiConnect() {
@@ -144,13 +152,12 @@ void handleWiFiConnect() {
   String ssid = doc["ssid"].as<String>();
   String password = doc["password"].as<String>();
   
-  // Сохраняем учетные данные для автопереподключения
-  savedWiFiSSID = ssid;
-  savedWiFiPassword = password;
+  // Сохраняем учетные данные в состояние системы
+  systemState.wifiSSID = ssid;
+  systemState.wifiPassword = password;
   
-  // Сохраняем в Preferences для восстановления после перезагрузки
-  preferences.putString("wifi_ssid", ssid);
-  preferences.putString("wifi_pass", password);
+  // Сохраняем состояние
+  saveSystemState();
   
   Serial.println("[API] Попытка подключения к WiFi: " + ssid);
   
@@ -187,16 +194,100 @@ void handleWiFiConnect() {
   server.send(200, "application/json", responseStr);
 }
 
+// Сохранение всего состояния системы в NVS
+void saveSystemState() {
+  preferences.begin("system", false);
+  
+  JsonDocument doc;
+  
+  // Сохраняем телефоны
+  JsonArray phonesArray = doc["phones"].to<JsonArray>();
+  for (const auto& phone : systemState.phones) {
+    JsonObject phoneObj = phonesArray.add<JsonObject>();
+    phoneObj["number"] = phone.number;
+    phoneObj["smsEnabled"] = phone.smsEnabled;
+    phoneObj["callEnabled"] = phone.callEnabled;
+  }
+  
+  // Сохраняем ключи
+  JsonArray keysArray = doc["keys"].to<JsonArray>();
+  for (const auto& key : systemState.keys433) {
+    keysArray.add(key);
+  }
+  
+  // Сохраняем WiFi настройки
+  doc["wifi"]["ssid"] = systemState.wifiSSID;
+  doc["wifi"]["password"] = systemState.wifiPassword;
+  doc["wifi"]["connected"] = systemState.wifiConnected;
+  
+  String jsonString;
+  serializeJson(doc, jsonString);
+  preferences.putString("state", jsonString);
+  preferences.end();
+  
+  Serial.println("[NVS] Состояние системы сохранено");
+}
+
+// Загрузка всего состояния системы из NVS
+void loadSystemState() {
+  preferences.begin("system", true);
+  String jsonString = preferences.getString("state", "{}");
+  preferences.end();
+  
+  JsonDocument doc;
+  deserializeJson(doc, jsonString);
+  
+  // Очищаем текущее состояние
+  systemState.phones.clear();
+  systemState.keys433.clear();
+  
+  // Загружаем телефоны
+  if (doc["phones"].is<JsonArray>()) {
+    JsonArray phonesArray = doc["phones"];
+    for (JsonObject phoneObj : phonesArray) {
+      PhoneEntry phone;
+      phone.number = phoneObj["number"].as<String>();
+      phone.smsEnabled = phoneObj["smsEnabled"].as<bool>();
+      phone.callEnabled = phoneObj["callEnabled"].as<bool>();
+      systemState.phones.push_back(phone);
+    }
+  }
+  
+  // Загружаем ключи
+  if (doc["keys"].is<JsonArray>()) {
+    JsonArray keysArray = doc["keys"];
+    for (unsigned long key : keysArray) {
+      if (key > 0) {
+        systemState.keys433.push_back(key);
+      }
+    }
+  }
+  
+  // Загружаем WiFi настройки
+  if (doc["wifi"].is<JsonObject>()) {
+    JsonObject wifiObj = doc["wifi"];
+    systemState.wifiSSID = wifiObj["ssid"].as<String>();
+    systemState.wifiPassword = wifiObj["password"].as<String>();
+    systemState.wifiConnected = wifiObj["connected"].as<bool>();
+  }
+  
+  Serial.println("[NVS] Состояние системы загружено: " + String(systemState.phones.size()) + " телефонов, " + String(systemState.keys433.size()) + " ключей");
+}
+
+
+
 // Обработка списка телефонов
 void handlePhonesAPI() {
   if (server.method() == HTTP_GET) {
     JsonDocument doc;
     JsonArray phonesArray = doc.to<JsonArray>();
     
-    for (const auto& phone : phones) {
+    for (const auto& phone : systemState.phones) {
       JsonObject obj = phonesArray.add<JsonObject>();
+      obj["id"] = phone.number; // Используем номер как ID
       obj["number"] = phone.number;
-      obj["action"] = phone.action;
+      obj["smsEnabled"] = phone.smsEnabled;
+      obj["callEnabled"] = phone.callEnabled;
     }
     
     String response;
@@ -209,13 +300,61 @@ void handlePhonesAPI() {
     
     PhoneEntry phone;
     phone.number = doc["number"].as<String>();
-    phone.action = doc["action"];
-    phones.push_back(phone);
+    phone.smsEnabled = doc["smsEnabled"].as<bool>();
+    phone.callEnabled = doc["callEnabled"].as<bool>();
+    systemState.phones.push_back(phone);
+    
+    // Сохраняем состояние
+    saveSystemState();
     
     Serial.println("[API] Добавлен телефон: " + phone.number);
     sendLog("📱 Добавлен телефон: " + phone.number, "success");
-    server.send(200, "application/json", "{\"success\":true}");
+    
+    // Возвращаем созданный объект с ID (номером)
+    JsonDocument responseDoc;
+    responseDoc["id"] = phone.number;
+    responseDoc["number"] = phone.number;
+    responseDoc["smsEnabled"] = phone.smsEnabled;
+    responseDoc["callEnabled"] = phone.callEnabled;
+    
+    String response;
+    serializeJson(responseDoc, response);
+    server.send(200, "application/json", response);
   }
+}
+
+// Обработка обновления настроек телефона
+void handlePhoneUpdate() {
+  JsonDocument doc;
+  deserializeJson(doc, server.arg("plain"));
+  
+  String phoneNumber = doc["id"].as<String>();
+  
+  if (phoneNumber.length() == 0) {
+    server.send(400, "application/json", "{\"error\":\"Invalid phone number\"}");
+    return;
+  }
+  
+  for (auto& phone : systemState.phones) {
+    if (phone.number == phoneNumber) {
+      if (doc["smsEnabled"].is<bool>()) {
+        phone.smsEnabled = doc["smsEnabled"].as<bool>();
+      }
+      if (doc["callEnabled"].is<bool>()) {
+        phone.callEnabled = doc["callEnabled"].as<bool>();
+      }
+      
+      // Сохраняем состояние
+      saveSystemState();
+      
+      Serial.println("[API] Обновлен телефон " + phoneNumber + ": SMS=" + String(phone.smsEnabled) + ", Call=" + String(phone.callEnabled));
+      sendLog("📱 Обновлены настройки телефона: " + phone.number, "success");
+      server.send(200, "application/json", "{\"success\":true}");
+      return;
+    }
+  }
+  
+  server.send(404, "application/json", "{\"error\":\"Phone not found\"}");
 }
 
 // Обработка удаления телефонов
@@ -223,11 +362,16 @@ void handlePhonesDelete() {
   JsonDocument doc;
   deserializeJson(doc, server.arg("plain"));
   
-  String number = doc["number"].as<String>();
+  String phoneNumber = doc["id"].as<String>();
   
-  for (auto it = phones.begin(); it != phones.end(); ++it) {
-    if (it->number == number) {
-      phones.erase(it);
+  for (auto it = systemState.phones.begin(); it != systemState.phones.end(); ++it) {
+    if (it->number == phoneNumber) {
+      String number = it->number;
+      systemState.phones.erase(it);
+      
+      // Сохраняем состояние
+      saveSystemState();
+      
       Serial.println("[API] Удален телефон: " + number);
       sendLog("🗑️ Удален телефон: " + number, "warning");
       server.send(200, "application/json", "{\"success\":true}");
@@ -244,7 +388,7 @@ void handleKeysAPI() {
     JsonDocument doc;
     JsonArray keysArray = doc.to<JsonArray>();
     
-    for (const auto& key : keys433) {
+    for (const auto& key : systemState.keys433) {
       keysArray.add(key);
     }
     
@@ -268,9 +412,13 @@ void handleKeysDelete() {
   
   unsigned long key = doc["key"];
   
-  for (auto it = keys433.begin(); it != keys433.end(); ++it) {
+  for (auto it = systemState.keys433.begin(); it != systemState.keys433.end(); ++it) {
     if (*it == key) {
-      keys433.erase(it);
+      systemState.keys433.erase(it);
+      
+      // Сохраняем состояние
+      saveSystemState();
+      
       Serial.println("[API] Удален ключ: " + String(key));
       sendLog("🗑️ Удален ключ: " + String(key), "warning");
       server.send(200, "application/json", "{\"success\":true}");
@@ -302,12 +450,9 @@ void setup() {
   preferences.begin("smart-gate", false);
   Serial.println("[OK] Preferences инициализированы");
   
-  // Загружаем сохранённые учетные данные WiFi
-  savedWiFiSSID = preferences.getString("wifi_ssid", "");
-  savedWiFiPassword = preferences.getString("wifi_pass", "");
-  if (savedWiFiSSID.length() > 0) {
-    Serial.println("[WiFi] Найдены сохранённые данные для: " + savedWiFiSSID);
-  }
+  // Загрузка состояния системы из постоянной памяти
+  loadSystemState();
+  
 
   // Инициализация GateControl
   GateControl::init(LED_PIN);
@@ -319,9 +464,9 @@ void setup() {
   Serial.println("[OK] 433MHz приемник инициализирован");
 
   // Попытка подключения к сохранённой сети
-  if (savedWiFiSSID.length() > 0) {
-    Serial.println("[WiFi] Попытка подключения к сохранённой сети: " + savedWiFiSSID);
-    WiFi.begin(savedWiFiSSID.c_str(), savedWiFiPassword.c_str());
+  if (systemState.wifiSSID.length() > 0) {
+    Serial.println("[WiFi] Попытка подключения к сохранённой сети: " + systemState.wifiSSID);
+    WiFi.begin(systemState.wifiSSID.c_str(), systemState.wifiPassword.c_str());
     
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -333,8 +478,10 @@ void setup() {
     
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("[WiFi] Подключено! IP: " + WiFi.localIP().toString());
+      systemState.wifiConnected = true;
     } else {
       Serial.println("[WiFi] Не удалось подключиться к сохранённой сети");
+      systemState.wifiConnected = false;
     }
   }
   
@@ -404,6 +551,7 @@ void setup() {
   server.on("/api/wifi/connect", HTTP_POST, handleWiFiConnect);
   server.on("/api/phones", handlePhonesAPI);
   server.on("/api/phones/delete", HTTP_POST, handlePhonesDelete);
+  server.on("/api/phones/update", HTTP_PUT, handlePhoneUpdate);
   server.on("/api/keys", handleKeysAPI);
   server.on("/api/keys/learn", HTTP_POST, handleKeysLearn);
   server.on("/api/keys/delete", HTTP_POST, handleKeysDelete);
@@ -458,13 +606,13 @@ void loop() {
       }
     } else {
       // Если было подключение, пытаемся переподключиться
-      if (savedWiFiSSID.length() > 0) {
+      if (systemState.wifiSSID.length() > 0) {
         if (wasConnected) {
-          Serial.println("[WiFi] Соединение потеряно, попытка переподключения к: " + savedWiFiSSID);
-          sendLog("⚠️ WiFi отключен, переподключение к " + savedWiFiSSID + "...", "warning");
+          Serial.println("[WiFi] Соединение потеряно, попытка переподключения к: " + systemState.wifiSSID);
+          sendLog("⚠️ WiFi отключен, переподключение к " + systemState.wifiSSID + "...", "warning");
           wasConnected = false;
         }
-        WiFi.begin(savedWiFiSSID.c_str(), savedWiFiPassword.c_str());
+        WiFi.begin(systemState.wifiSSID.c_str(), systemState.wifiPassword.c_str());
       }
       
       // Отправляем статус отключения
@@ -480,7 +628,22 @@ void loop() {
     int protocol = mySwitch.getReceivedProtocol();
     
     if (key != 0) {
-      RF433Receiver::handleReceivedCode(key, bitLength, protocol);
+      // Проверяем, есть ли уже такой ключ
+      bool keyExists = false;
+      for (const auto& existingKey : systemState.keys433) {
+        if (existingKey == key) {
+          keyExists = true;
+          break;
+        }
+      }
+      
+      // Если ключа нет, добавляем его
+      if (!keyExists) {
+        systemState.keys433.push_back(key);
+        saveSystemState();
+        Serial.println("[433MHz] Новый ключ добавлен: " + String(key));
+        sendLog("🔑 Новый ключ добавлен: " + String(key), "success");
+      }
       
       // Отправляем событие в React через WebSocket
       String keyData = "{\"key\":" + String(key) + 

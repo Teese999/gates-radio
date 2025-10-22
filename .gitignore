@@ -17,6 +17,7 @@
 *.pyc
 __pycache__/
 smart-gate-frontend/node_modules/*
+smart-gate-frontend/build/*
 data/
 # Logs
 *.log
