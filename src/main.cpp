@@ -2,31 +2,35 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
-#include <RCSwitch.h>
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
 #include <ESPmDNS.h>
 #include <WebSocketsServer.h>
 
 // Подключение кастомных модулей
-#include "RF433Receiver.h"
+#include "CC1101Manager.h"
 #include "GateControl.h"
 #include "GSMManager.h"
 
 // --- Константы пинов ---
-// Пины для 433MHz приемника
-#define RF_DATA_PIN 15 // GPIO15 - Data pin для 433MHz приемника
+// Пины для CC1101 (SPI + управляющие)
+#define CC1101_CS   5  // GPIO5  - Chip Select (CSN)
+#define CC1101_GDO0 4  // GPIO4  - Data Output (основной)
+#define CC1101_GDO2 2  // GPIO2  - Преамбула (для нестандартных брелков)
+// SPI пины (стандартные для ESP32):
+// SCK  - GPIO18
+// MISO - GPIO19
+// MOSI - GPIO23
 
 // Пины для управления воротами
 #define LED_PIN     12 // GPIO12 - Управление светодиодом/реле
 
 // Пины для GSM SIM800L (UART2)
-#define GSM_RX_PIN  19 // GPIO19 - RX пин для UART2 (подключается к TX GSM модуля)
-#define GSM_TX_PIN  22 // GPIO22 - TX пин для UART2 (подключается к RX GSM модуля)
+#define GSM_RX_PIN  16 // GPIO16 - RX пин для UART2 (подключается к TX GSM модуля)
+#define GSM_TX_PIN  17 // GPIO17 - TX пин для UART2 (подключается к RX GSM модуля)
 
 // --- Глобальные объекты ---
 Preferences preferences; // Для сохранения данных в NVS
-RCSwitch mySwitch = RCSwitch(); // Объект 433MHz приемника
 WebServer server(80); // Веб-сервер на порту 80
 WebSocketsServer webSocket(81); // WebSocket сервер на порту 81
 
@@ -38,11 +42,14 @@ struct PhoneEntry {
 };
 
 struct KeyEntry {
-  unsigned long code;
+  uint32_t code;
   String name;
   bool enabled;
-  int bitLength;
-  int protocol;
+  String rawData;
+  int rssi;
+  float frequency;
+  String protocol;
+  String modulation;
   unsigned long timestamp;
 };
 
@@ -60,9 +67,7 @@ struct SystemState {
   String wifiPassword;
   bool wifiConnected;
   bool learningMode;
-  unsigned long learningKey;
-  int learningBitLength;
-  int learningProtocol;
+  float currentFrequency;
 };
 
 // --- Хранилище данных ---
@@ -229,8 +234,11 @@ void saveSystemState() {
     keyObj["code"] = key.code;
     keyObj["name"] = key.name;
     keyObj["enabled"] = key.enabled;
-    keyObj["bitLength"] = key.bitLength;
+    keyObj["rawData"] = key.rawData;
+    keyObj["rssi"] = key.rssi;
+    keyObj["frequency"] = key.frequency;
     keyObj["protocol"] = key.protocol;
+    keyObj["modulation"] = key.modulation;
     keyObj["timestamp"] = key.timestamp;
   }
   
@@ -241,6 +249,9 @@ void saveSystemState() {
   
   // Сохраняем состояние режима обучения
   doc["learningMode"] = systemState.learningMode;
+  
+  // Сохраняем частоту
+  doc["frequency"] = systemState.currentFrequency;
   
   String jsonString;
   serializeJson(doc, jsonString);
@@ -280,11 +291,14 @@ void loadSystemState() {
     JsonArray keysArray = doc["keys"];
     for (JsonObject keyObj : keysArray) {
       KeyEntry key;
-      key.code = keyObj["code"].as<unsigned long>();
+      key.code = keyObj["code"].as<uint32_t>();
       key.name = keyObj["name"].as<String>();
       key.enabled = keyObj["enabled"].as<bool>();
-      key.bitLength = keyObj["bitLength"].as<int>();
-      key.protocol = keyObj["protocol"].as<int>();
+      key.rawData = keyObj["rawData"] | "";
+      key.rssi = keyObj["rssi"] | 0;
+      key.frequency = keyObj["frequency"] | 433.92;
+      key.protocol = keyObj["protocol"] | "RAW/Custom";
+      key.modulation = keyObj["modulation"] | "ASK/OOK";
       key.timestamp = keyObj["timestamp"].as<unsigned long>();
       
       if (key.code > 0) {
@@ -304,10 +318,14 @@ void loadSystemState() {
   // Загружаем состояние режима обучения
   systemState.learningMode = doc["learningMode"].as<bool>();
   
+  // Загружаем частоту
+  systemState.currentFrequency = doc["frequency"] | 433.92;
+  
   // Принудительно сбрасываем режим обучения при загрузке
   systemState.learningMode = false;
   
   Serial.println("[NVS] Состояние системы загружено: " + String(systemState.phones.size()) + " телефонов, " + String(systemState.keys433.size()) + " ключей");
+  Serial.println("[NVS] Частота: " + String(systemState.currentFrequency) + " МГц");
 }
 
 
@@ -429,8 +447,11 @@ void handleKeysAPI() {
       keyObj["code"] = key.code;
       keyObj["name"] = key.name;
       keyObj["enabled"] = key.enabled;
-      keyObj["bitLength"] = key.bitLength;
+      keyObj["rawData"] = key.rawData;
+      keyObj["rssi"] = key.rssi;
+      keyObj["frequency"] = key.frequency;
       keyObj["protocol"] = key.protocol;
+      keyObj["modulation"] = key.modulation;
       keyObj["timestamp"] = key.timestamp;
     }
     
@@ -445,9 +466,7 @@ void handleKeysLearn() {
   Serial.println("[API] Получен запрос на обучение ключа");
   
   systemState.learningMode = true;
-  systemState.learningKey = 0;
-  systemState.learningBitLength = 0;
-  systemState.learningProtocol = 0;
+  CC1101Manager::resetReceived();
   
   // Сохраняем состояние
   saveSystemState();
@@ -552,6 +571,69 @@ void handleGateTrigger() {
   server.send(200, "application/json", "{\"success\":true}");
 }
 
+// Обработка получения частоты
+void handleFrequencyGet() {
+  JsonDocument doc;
+  doc["frequency"] = CC1101Manager::getFrequency();
+  doc["rssi"] = CC1101Manager::getRSSI();
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+// Обработка установки частоты
+void handleFrequencySet() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+    return;
+  }
+  
+  JsonDocument doc;
+  deserializeJson(doc, server.arg("plain"));
+  
+  float frequency = doc["frequency"].as<float>();
+  
+  if (frequency < 300.0 || frequency > 928.0) {
+    server.send(400, "application/json", "{\"success\":false,\"error\":\"Частота должна быть в диапазоне 300-928 МГц\"}");
+    return;
+  }
+  
+  Serial.println("[API] Установка частоты: " + String(frequency) + " МГц");
+  
+  if (CC1101Manager::setFrequency(frequency)) {
+    systemState.currentFrequency = frequency;
+    saveSystemState();
+    
+    sendLog("📡 Частота изменена на " + String(frequency) + " МГц", "success");
+    
+    JsonDocument response;
+    response["success"] = true;
+    response["frequency"] = frequency;
+    
+    String responseStr;
+    serializeJson(response, responseStr);
+    server.send(200, "application/json", responseStr);
+  } else {
+    sendLog("❌ Ошибка изменения частоты", "error");
+    server.send(500, "application/json", "{\"success\":false,\"error\":\"Ошибка установки частоты\"}");
+  }
+}
+
+// Обработка получения конфигурации CC1101
+void handleCC1101Config() {
+  CC1101Manager::printConfig();
+  
+  JsonDocument doc;
+  doc["frequency"] = CC1101Manager::getFrequency();
+  doc["rssi"] = CC1101Manager::getRSSI();
+  doc["status"] = "active";
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
 // --- Setup Function ---
 void setup() {
   Serial.begin(115200);
@@ -573,17 +655,25 @@ void setup() {
   GateControl::init(LED_PIN);
   Serial.println("[OK] GateControl инициализирован");
 
-  // Инициализация RF433Receiver
-  Serial.println("[INIT] Инициализация 433MHz приемника на пине " + String(RF_DATA_PIN));
+  // Инициализация CC1101
+  Serial.println("[INIT] Инициализация CC1101 радиомодуля...");
   
-  // Настройка пина как INPUT с pull-up резистором
-  pinMode(RF_DATA_PIN, INPUT_PULLUP);
-  Serial.println("[INIT] Пин " + String(RF_DATA_PIN) + " настроен как INPUT_PULLUP");
+  // Устанавливаем частоту по умолчанию, если не сохранена
+  if (systemState.currentFrequency <= 0) {
+    systemState.currentFrequency = 433.92; // Дефолтная частота
+  }
   
-  mySwitch.enableReceive(RF_DATA_PIN);
-  RF433Receiver::init(&mySwitch);
-  Serial.println("[OK] 433MHz приемник инициализирован на пине " + String(RF_DATA_PIN));
-  Serial.println("[INFO] Ожидаем сигналы 433MHz...");
+  if (CC1101Manager::init(CC1101_CS, CC1101_GDO0, CC1101_GDO2)) {
+    Serial.println("[OK] CC1101 успешно инициализирован");
+    
+    // Устанавливаем сохраненную/дефолтную частоту
+    CC1101Manager::setFrequency(systemState.currentFrequency);
+    Serial.println("[OK] Частота установлена: " + String(systemState.currentFrequency) + " МГц");
+    Serial.println("[INFO] Первые 3 секунды сигналы будут игнорироваться (фильтрация начальных артефактов)");
+  } else {
+    Serial.println("[ERROR] Ошибка инициализации CC1101!");
+  }
+  Serial.println("[INFO] Ожидаем RF сигналы на частоте " + String(CC1101Manager::getFrequency()) + " МГц...");
 
   // Попытка подключения к сохранённой сети
   if (systemState.wifiSSID.length() > 0) {
@@ -681,6 +771,9 @@ void setup() {
   server.on("/api/keys/delete", HTTP_POST, handleKeysDelete);
   server.on("/api/keys/update", HTTP_PUT, handleKeyUpdate);
   server.on("/api/gate/trigger", HTTP_POST, handleGateTrigger);
+  server.on("/api/frequency", HTTP_GET, handleFrequencyGet);
+  server.on("/api/frequency/set", HTTP_POST, handleFrequencySet);
+  server.on("/api/cc1101/config", HTTP_GET, handleCC1101Config);
   
   server.begin();
   Serial.println("[OK] Веб-сервер запущен на порту 80");
@@ -702,7 +795,7 @@ void setup() {
   sendLog("✅ Система запущена", "success");
   sendLog("📡 WiFi AP: SmartGate-Config", "info");
   sendLog("🌐 Адрес: http://smartgate.local", "info");
-  sendLog("🔌 433MHz приемник активен", "info");
+  sendLog("🔌 CC1101 активен на " + String(CC1101Manager::getFrequency()) + " МГц", "info");
 }
 
 // --- Loop Function ---
@@ -746,63 +839,49 @@ void loop() {
     }
   }
 
-  // Тест работы 433MHz приемника (каждые 10 секунд)
-  static unsigned long lastTest = 0;
-  if (millis() - lastTest > 10000) {
-    lastTest = millis();
-    Serial.println("[TEST] Проверка 433MHz приемника - GPIO " + String(RF_DATA_PIN));
-    Serial.println("[TEST] mySwitch.available() = " + String(mySwitch.available()));
-    Serial.println("[TEST] GPIO " + String(RF_DATA_PIN) + " состояние = " + String(digitalRead(RF_DATA_PIN)));
-    
-    // Дополнительная диагностика
-    Serial.println("[TEST] Попытка чтения сырого сигнала...");
-    for (int i = 0; i < 20; i++) {
-      Serial.print(String(digitalRead(RF_DATA_PIN)));
-      delay(10);
-    }
-    Serial.println();
+  // Диагностика прерываний CC1101 (каждые 10 секунд в режиме обучения)
+  static unsigned long lastCC1101Diagnostic = 0;
+  if (systemState.learningMode && millis() - lastCC1101Diagnostic > 10000) {
+    lastCC1101Diagnostic = millis();
+    unsigned long intCount = CC1101Manager::getInterruptCount();
+    int rssi = CC1101Manager::getRSSI();
+    Serial.printf("[CC1101] 🔍 Диагностика: Прерываний=%lu, RSSI=%d dBm\n", intCount, rssi);
+    sendLog("🔍 Прерываний: " + String(intCount) + ", RSSI: " + String(rssi) + " dBm", "info");
   }
 
-  // Мониторинг изменений состояния пина 433MHz в реальном времени
-  static int lastPinState = -1;
-  int currentPinState = digitalRead(RF_DATA_PIN);
-  if (currentPinState != lastPinState) {
-    lastPinState = currentPinState;
-    Serial.println("[PIN] GPIO " + String(RF_DATA_PIN) + " изменился на: " + String(currentPinState));
-  }
-
-  // Обработка 433MHz сигналов
-  if (mySwitch.available()) {
-    unsigned long key = mySwitch.getReceivedValue();
-    int bitLength = mySwitch.getReceivedBitlength();
-    int protocol = mySwitch.getReceivedProtocol();
+  // Обработка CC1101 RF сигналов
+  if (CC1101Manager::checkReceived()) {
+    ReceivedKey receivedKey = CC1101Manager::getReceivedKey();
     
-    Serial.println("[433MHz] Получен сигнал - Ключ: " + String(key) + ", Бит: " + String(bitLength) + ", Протокол: " + String(protocol));
-    sendLog("📡 Получен сигнал 433MHz: " + String(key) + " (бит: " + String(bitLength) + ", протокол: " + String(protocol) + ")", "info");
-    
-    if (key != 0) {
+    if (receivedKey.code != 0) {
       // Проверяем, есть ли уже такой ключ
       bool keyExists = false;
-      for (const auto& existingKey : systemState.keys433) {
-        if (existingKey.code == key) {
+      KeyEntry* existingKey = nullptr;
+      
+      for (auto& key : systemState.keys433) {
+        if (key.code == receivedKey.code) {
           keyExists = true;
+          existingKey = &key;
           break;
         }
       }
       
       if (systemState.learningMode) {
-        Serial.println("[433MHz] Режим обучения активен - обрабатываем ключ");
+        Serial.println("[CC1101] Режим обучения активен - обрабатываем ключ");
         sendLog("🎓 Режим обучения: обрабатываем полученный ключ", "info");
         
         // Режим обучения - добавляем новый ключ
         if (!keyExists) {
           KeyEntry newKey;
-          newKey.code = key;
-          newKey.name = "Ключ " + String(key);
+          newKey.code = receivedKey.code;
+          newKey.name = "Ключ 0x" + String(receivedKey.code, HEX);
           newKey.enabled = true;
-          newKey.bitLength = bitLength;
-          newKey.protocol = protocol;
-          newKey.timestamp = millis();
+          newKey.rawData = receivedKey.rawData;
+          newKey.rssi = receivedKey.rssi;
+          newKey.frequency = CC1101Manager::getFrequency();
+          newKey.protocol = receivedKey.protocol;
+          newKey.modulation = receivedKey.modulation;
+          newKey.timestamp = receivedKey.timestamp;
           
           systemState.keys433.push_back(newKey);
           
@@ -812,56 +891,65 @@ void loop() {
           // Сохраняем состояние
           saveSystemState();
           
-          Serial.println("[433MHz] Новый ключ добавлен: " + String(key));
+          Serial.println("[CC1101] ✅ Новый ключ добавлен: " + String(receivedKey.code));
           sendLog("🔑 Новый ключ добавлен: " + newKey.name, "success");
           
           // Отправляем событие о добавлении ключа
-          String keyData = "{\"code\":" + String(key) + 
+          String keyData = "{\"code\":" + String(receivedKey.code) + 
                           ",\"name\":\"" + newKey.name + "\"" +
                           ",\"enabled\":" + String(newKey.enabled) +
-                          ",\"bitLength\":" + String(bitLength) + 
-                          ",\"protocol\":" + String(protocol) + 
+                          ",\"rawData\":\"" + newKey.rawData + "\"" +
+                          ",\"rssi\":" + String(newKey.rssi) +
+                          ",\"frequency\":" + String(newKey.frequency) +
+                          ",\"protocol\":\"" + newKey.protocol + "\"" +
+                          ",\"modulation\":\"" + newKey.modulation + "\"" +
                           ",\"timestamp\":" + String(newKey.timestamp) + "}";
           sendWebSocketEvent("key_added", keyData.c_str());
         } else {
-          Serial.println("[433MHz] Ключ уже существует в режиме обучения");
-          // Ключ уже существует, выключаем режим обучения
+          Serial.println("[CC1101] ⚠️ Ключ уже существует в режиме обучения");
           systemState.learningMode = false;
           saveSystemState();
-          sendLog("⚠️ Ключ уже существует: " + String(key), "warning");
+          sendLog("⚠️ Ключ уже существует: 0x" + String(receivedKey.code, HEX), "warning");
         }
       } else {
-        Serial.println("[433MHz] Обычный режим - проверяем активность ключа");
+        Serial.println("[CC1101] Обычный режим - проверяем активность ключа");
         // Обычный режим - проверяем активность ключа
-        if (keyExists) {
-          for (const auto& existingKey : systemState.keys433) {
-            if (existingKey.code == key && existingKey.enabled) {
-              Serial.println("[433MHz] Активация ворот ключом: " + existingKey.name);
-              sendLog("🚪 Ворота активированы ключом: " + existingKey.name, "success");
-              GateControl::triggerGatePulse();
-              break;
-            }
+        if (keyExists && existingKey != nullptr) {
+          if (existingKey->enabled) {
+            Serial.println("[CC1101] ✅ Активация ворот ключом: " + existingKey->name);
+            sendLog("🚪 Ворота активированы ключом: " + existingKey->name, "success");
+            GateControl::triggerGatePulse();
+          } else {
+            Serial.println("[CC1101] ⚠️ Ключ отключен: " + existingKey->name);
+            sendLog("⚠️ Ключ отключен: " + existingKey->name, "warning");
           }
         } else {
-          Serial.println("[433MHz] Ключ не найден в базе данных");
-          sendLog("❓ Неизвестный ключ: " + String(key), "warning");
+          Serial.println("[CC1101] ❓ Ключ не найден в базе данных");
+          sendLog("❓ Неизвестный ключ: 0x" + String(receivedKey.code, HEX), "warning");
         }
       }
       
       // Отправляем событие в React через WebSocket
-      String keyData = "{\"key\":" + String(key) + 
-                       ",\"bitLength\":" + String(bitLength) + 
-                       ",\"protocol\":" + String(protocol) + 
-                       ",\"timestamp\":" + String(millis()) + "}";
+      String keyData = "{\"code\":" + String(receivedKey.code) + 
+                       ",\"rawData\":\"" + receivedKey.rawData + "\"" +
+                       ",\"rssi\":" + String(receivedKey.rssi) +
+                       ",\"snr\":" + String(receivedKey.snr) +
+                       ",\"frequency\":" + String(CC1101Manager::getFrequency()) +
+                       ",\"protocol\":\"" + receivedKey.protocol + "\"" +
+                       ",\"modulation\":\"" + receivedKey.modulation + "\"" +
+                       ",\"timestamp\":" + String(receivedKey.timestamp) + "}";
       sendWebSocketEvent("key_received", keyData.c_str());
-      
-      // Логируем только в Serial, чтобы не дублировать с фронтом
-      Serial.println("[433MHz] Ключ: " + String(key) + ", Протокол: " + String(protocol));
-    } else {
-      Serial.println("[433MHz] Получен нулевой ключ - игнорируем");
     }
     
-    mySwitch.resetAvailable();
+    CC1101Manager::resetReceived();
+  }
+  
+  // Периодическая диагностика CC1101 (каждые 30 секунд)
+  static unsigned long lastDiagnostic = 0;
+  if (millis() - lastDiagnostic > 30000) {
+    lastDiagnostic = millis();
+    int rssi = CC1101Manager::getRSSI();
+    Serial.println("[CC1101] Диагностика - RSSI: " + String(rssi) + " dBm, Частота: " + String(CC1101Manager::getFrequency()) + " МГц");
   }
 
   // Обработка GSM (опционально)

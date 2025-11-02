@@ -18,10 +18,16 @@
 
 ## Схема подключения
 
-### Радиомодуль SRX882 v1.3
-- **VCC** → 3.3V
-- **GND** → GND  
-- **DATA** → GPIO13
+| CC1101 Pin | ESP32 Pin | Описание |
+|------------|-----------|----------|
+| **VCC** | 3.3V | Питание (НЕ 5V!) |
+| **GND** | GND | Земля |
+| **SCK** | GPIO18 | SPI Clock |
+| **MISO** | GPIO19 | SPI Master In Slave Out |
+| **MOSI** | GPIO23 | SPI Master Out Slave In |
+| **CSN** (CS) | GPIO5 | Chip Select |
+| **GDO0** | GPIO4 | Data Output (основной) |
+| **GDO2** | GPIO2 | Преамбула (опционально) |
 
 ### Светодиод
 - **Анод** → GPIO12 (через резистор 220Ω)
