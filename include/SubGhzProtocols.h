@@ -29,6 +29,10 @@ extern const SubGhzProtocolConfig PROTOCOL_GATE_TX;
 extern const SubGhzProtocolConfig PROTOCOL_NERO_SKETCH;
 extern const SubGhzProtocolConfig PROTOCOL_NERO_RADIO;
 
+// Nice протоколы
+extern const SubGhzProtocolConfig PROTOCOL_NICE_FLORS_12BIT;
+extern const SubGhzProtocolConfig PROTOCOL_NICE_FLORS_24BIT;
+
 // Популярные протоколы
 extern const SubGhzProtocolConfig PROTOCOL_EV1527;
 extern const SubGhzProtocolConfig PROTOCOL_PT2262;
@@ -38,6 +42,47 @@ extern const SubGhzProtocolConfig PROTOCOL_HX2262;
 extern const SubGhzProtocolConfig PROTOCOL_ROGER;
 extern const SubGhzProtocolConfig PROTOCOL_LINEAR;
 extern const SubGhzProtocolConfig PROTOCOL_BETT;
+
+// Протоколы для ворот
+extern const SubGhzProtocolConfig PROTOCOL_HOLTEK_12BIT;
+extern const SubGhzProtocolConfig PROTOCOL_HOLTEK_24BIT;
+extern const SubGhzProtocolConfig PROTOCOL_MARANTEC;
+extern const SubGhzProtocolConfig PROTOCOL_MARANTEC_32BIT;
+extern const SubGhzProtocolConfig PROTOCOL_FAAC_SLH;
+extern const SubGhzProtocolConfig PROTOCOL_FAAC;
+extern const SubGhzProtocolConfig PROTOCOL_APRIMATIC;
+extern const SubGhzProtocolConfig PROTOCOL_AN_MOTORS;
+extern const SubGhzProtocolConfig PROTOCOL_DOORHAN;
+extern const SubGhzProtocolConfig PROTOCOL_IDTEC;
+extern const SubGhzProtocolConfig PROTOCOL_CHAMBON;
+extern const SubGhzProtocolConfig PROTOCOL_DOOYA;
+extern const SubGhzProtocolConfig PROTOCOL_MAGELLAN;
+extern const SubGhzProtocolConfig PROTOCOL_BFT;
+extern const SubGhzProtocolConfig PROTOCOL_MAESTRO;
+extern const SubGhzProtocolConfig PROTOCOL_CHAMBERLAIN;
+
+// Протоколы с манчестерским кодированием
+extern const SubGhzProtocolConfig PROTOCOL_SOMFY;
+
+// Протоколы для умного дома
+extern const SubGhzProtocolConfig PROTOCOL_HOMEEASY;
+extern const SubGhzProtocolConfig PROTOCOL_INTERTECHNO;
+extern const SubGhzProtocolConfig PROTOCOL_ELRO;
+
+// Протоколы безопасности
+extern const SubGhzProtocolConfig PROTOCOL_SECURITY_PLUS;
+extern const SubGhzProtocolConfig PROTOCOL_SECURITY_PLUS_2;
+extern const SubGhzProtocolConfig PROTOCOL_YALE;
+extern const SubGhzProtocolConfig PROTOCOL_HID;
+
+// Другие протоколы
+extern const SubGhzProtocolConfig PROTOCOL_X10;
+extern const SubGhzProtocolConfig PROTOCOL_LINEAR_40BIT;
+extern const SubGhzProtocolConfig PROTOCOL_KIA_HYUNDAI_32BIT;
+extern const SubGhzProtocolConfig PROTOCOL_STAR_LINE;
+extern const SubGhzProtocolConfig PROTOCOL_KIA_HYUNDAI;
+extern const SubGhzProtocolConfig PROTOCOL_OREGON;
+extern const SubGhzProtocolConfig PROTOCOL_KEELOQ;  // 64-bit криптографический
 
 // Массив всех протоколов для перебора
 extern const SubGhzProtocolConfig* ALL_PROTOCOLS[];

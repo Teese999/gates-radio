@@ -22,6 +22,7 @@ namespace {
 // Статические переменные
 CC1101* CC1101Manager::radio = nullptr;
 float CC1101Manager::currentFrequency = 434.42;
+ModulationType CC1101Manager::currentModulation = MODULATION_ASK_OOK;
 volatile bool CC1101Manager::receivedFlag = false;
 ReceivedKey CC1101Manager::lastKey;
 int CC1101Manager::gdo0PinNumber = -1;
@@ -301,6 +302,13 @@ CC1101Manager::DecodedResult CC1101Manager::tryDecodeKnownProtocols(const PulseP
         estimatedTe = samples[sampleCount / 2];
     }
     
+    // Алгоритм автоопределения протокола (как в Flipper Zero "read fixed scan")
+    // 1. Пробуем все протоколы из списка Flipper Zero
+    // 2. Для каждого протокола тестируем разные варианты кодирования (инверсия, соотношения)
+    // 3. Автоматически определяем оптимальный TE из сигнала
+    // 4. Выбираем лучший результат по качеству декодирования (приоритет полному декодированию)
+    // 5. Поддерживаем манчестерское кодирование для специальных протоколов (Somfy и др.)
+    
     // Используем протоколы из SubGhzProtocols (адаптированные из Flipper Zero)
     // Пробуем каждый протокол с разными вариантами кодирования
     
@@ -341,7 +349,7 @@ CC1101Manager::DecodedResult CC1101Manager::tryDecodeKnownProtocols(const PulseP
             float baseDelay = (proto->te > 0) ? proto->te : estimatedTe;
             
             if (decodeProtocolRCSwitch(pulses, length, baseDelay, variant.highRatio, variant.lowRatio,
-                                       variant.inverted, proto->bitCount, proto->name, result)) {
+                                       variant.inverted, proto->bitCount, proto->name, proto, result)) {
                 return result;
             }
         }
@@ -360,8 +368,9 @@ CC1101Manager::DecodedResult CC1101Manager::tryDecodeKnownProtocols(const PulseP
     };
     
     for (const auto& cfg : fallbacks) {
+        // Для fallback протоколов передаем nullptr, так как их нет в списке протоколов
         if (decodeProtocolRCSwitch(pulses, length, estimatedTe, cfg.highRatio, cfg.lowRatio,
-                                   cfg.inverted, cfg.bitCount, cfg.name, result)) {
+                                   cfg.inverted, cfg.bitCount, cfg.name, nullptr, result)) {
             return result;
         }
     }
@@ -369,7 +378,33 @@ CC1101Manager::DecodedResult CC1101Manager::tryDecodeKnownProtocols(const PulseP
     return result;
 }
 
-// Вспомогательная функция для определения TE из сигнала (как в Flipper Zero)
+// Вспомогательная функция для получения ожидаемого количества бит для протокола
+// Использует данные из конфигурации протоколов, чтобы избежать дублирования логики
+static int getExpectedBitsForProtocol(const String& protocolName, int actualBitCount) {
+    // Ищем протокол в конфигурации по имени
+    for (int i = 0; i < PROTOCOL_COUNT; i++) {
+        const SubGhzProtocolConfig* proto = ALL_PROTOCOLS[i];
+        if (!proto) break;
+        
+        // Сравниваем имена протоколов (с учетом вариантов типа PT2262_1:1)
+        String protoName = String(proto->name);
+        if (protocolName == protoName || protocolName.startsWith(protoName + "_")) {
+            // Для протоколов с вариантами (CAME, Holtek, Nice FLO) проверяем фактическое количество бит
+            if (protocolName == "CAME" || protocolName.startsWith("Holtek") || 
+                protocolName == "Nice FLO" || protocolName == "Nice FlorS") {
+                // Если фактическое количество бит меньше стандартного, возвращаем его
+                if (actualBitCount > 0 && actualBitCount < proto->bitCount) {
+                    return actualBitCount;
+                }
+            }
+            return proto->bitCount;
+        }
+    }
+    
+    // Если протокол не найден, возвращаем значение по умолчанию
+    return 24;
+}
+
 float CC1101Manager::findBestTE(const PulsePattern* pulses, int length, float initialTE) {
     // Собираем все короткие импульсы (вероятные TE)
     const int maxSamples = min(length, 100);
@@ -418,6 +453,7 @@ float CC1101Manager::findBestTE(const PulsePattern* pulses, int length, float in
 bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int length, float baseDelay,
                                            float highRatio, float lowRatio, bool inverted,
                                            int bitCount, const char* protocolName,
+                                           const SubGhzProtocolConfig* protoConfig,
                                            DecodedResult& out) {
     // Толерантность для декодирования (35% для баланса между точностью и чувствительностью)
     const float tolerance = 0.35f;
@@ -425,37 +461,58 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
     // Определяем оптимальный TE из сигнала (как в Flipper Zero)
     float optimalTE = findBestTE(pulses, length, baseDelay);
     
-    // Для CAME и Nero Radio пробуем больше вариантов TE
+    // Для всех протоколов пробуем больше вариантов TE (как для CAME)
+    // Это улучшает определение всех протоколов
     float teVariants[] = {
         optimalTE,
         optimalTE * 0.95f,
         optimalTE * 1.05f,
         optimalTE * 0.9f,
-        optimalTE * 1.1f
+        optimalTE * 1.1f,
+        optimalTE * 0.85f,
+        optimalTE * 1.15f
     };
-    bool isCameOrNero = (strcmp(protocolName, "CAME") == 0) || (strcmp(protocolName, "Nero Radio") == 0);
-    int teVariantCount = isCameOrNero ? 5 : 3;
+    // Все протоколы теперь проверяются с расширенным набором вариантов TE
+    int teVariantCount = 7; // Увеличено с 3 до 7 для всех протоколов
     
-    // Ограничения для TE по протоколу
+    // Ограничения для TE по протоколу (более гибкие для всех протоколов)
     float minTE, maxTE;
     if (strcmp(protocolName, "CAME") == 0) {
         // CAME имеет строгий диапазон TE: 270-380 мкс (типично 320 мкс)
-        // Ужесточаем проверку для предотвращения ложных срабатываний
         minTE = 250.0f;
         maxTE = 400.0f;
     } else if (strcmp(protocolName, "Nero Radio") == 0) {
         minTE = 250.0f;  // Nero Radio обычно 300-400 мкс
         maxTE = 1000.0f; // Но может быть и больше (до 1000 мкс)
+    } else if (strcmp(protocolName, "Princeton") == 0 || strcmp(protocolName, "Nero Sketch") == 0) {
+        // Princeton и Nero Sketch обычно 400 мкс
+        minTE = 300.0f;
+        maxTE = 600.0f;
+    } else if (strcmp(protocolName, "PT2262") == 0 || strcmp(protocolName, "PT2262_1:1") == 0 || 
+               strcmp(protocolName, "PT2262_1:2") == 0) {
+        // PT2262 обычно 400-600 мкс
+        minTE = 300.0f;
+        maxTE = 800.0f;
+    } else if (strcmp(protocolName, "EV1527") == 0 || strcmp(protocolName, "Roger") == 0) {
+        // EV1527 и Roger обычно 400-500 мкс
+        minTE = 300.0f;
+        maxTE = 700.0f;
+    } else if (strcmp(protocolName, "Holtek") == 0) {
+        // Holtek обычно 300-400 мкс
+        minTE = 250.0f;
+        maxTE = 500.0f;
     } else {
-        minTE = 100.0f;
+        // Для остальных протоколов используем широкий диапазон, но разумный
+        minTE = 150.0f;
         maxTE = 2000.0f;
     }
     
     // Максимальный пропуск преамбулы (Flipper Zero обычно пропускает до 50% для поиска начала)
-    // Но для предотвращения ложных срабатываний ограничиваем до 30% для большинства протоколов
-    int maxSkip = min(30, length / 3); // Ограничиваем до 30% вместо 50%
+    // Увеличиваем до 40% для лучшего определения всех протоколов
+    int maxSkip = min(40, length / 2); // Увеличено до 40% для всех протоколов
     
-    // Для CAME сохраняем лучший результат (приоритет полному декодированию)
+    // Для всех протоколов сохраняем лучший результат (приоритет полному декодированию)
+    // Это улучшает определение всех протоколов, как для CAME
     DecodedResult bestResult = {false, 0, 0, "", ""};
     int bestBits = 0;
     int bestSkip = -1;
@@ -485,10 +542,8 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
             
             // Декодируем биты последовательно
             // Проверяем, использует ли протокол манчестерское кодирование
-            // (определяется из конфигурации протокола, но пока проверяем по имени)
-            bool useManchester = false; // TODO: получить из proto->manchester
-            // Временная проверка по имени протокола (можно будет убрать после добавления флага)
-            // В данной реализации пока не используется, но структура готова
+            // Используем флаг из конфигурации протокола (как в Flipper Zero)
+            bool useManchester = (protoConfig != nullptr) ? protoConfig->manchester : false;
             
             while (i + 1 < length && bits < bitCount) {
                 float p0 = static_cast<float>(pulses[i].duration) / testTE;
@@ -499,18 +554,30 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
                 
                 if (useManchester) {
                     // Манчестерское кодирование: каждый бит передается двумя импульсами
-                    // 0: LOW->HIGH (короткий LOW, длинный HIGH)
-                    // 1: HIGH->LOW (длинный HIGH, короткий LOW)
-                    // Обычно соотношение 1:1 или 1:2
-                    // Для упрощения пробуем оба варианта
+                    // В манчестере бит определяется по направлению перехода уровня
+                    // 0: LOW->HIGH (переход от низкого к высокому)
+                    // 1: HIGH->LOW (переход от высокого к низкому)
+                    // Для манчестера обычно соотношение 1:1
+                    float expectedRatio = (protoConfig != nullptr && protoConfig->highRatio > 0 && protoConfig->lowRatio > 0) ? 
+                                         (protoConfig->highRatio / protoConfig->lowRatio) : 1.0f;
+                    
+                    // Проверяем манчестерские паттерны
+                    // Для манчестера важны переходы уровня, а не абсолютные значения
                     if (match(p0, p1, 1.0f, 1.0f)) {
-                        // Одинаковые импульсы - возможно 0 или 1 в зависимости от порядка
-                        // В манчестере важно учитывать порядок переходов
-                        bitValue = (p0 < p1) ? 0 : 1; // Упрощенная логика
+                        // Одинаковые импульсы в манчестере - определяем по уровню перехода
+                        // Если текущий уровень HIGH, то переход HIGH->LOW = 1
+                        // Если текущий уровень LOW, то переход LOW->HIGH = 0
+                        bitValue = pulses[i].level ? 1 : 0;
                         bitIdentified = true;
-                    } else if (match(p0, p1, 1.0f, 2.0f) || match(p0, p1, 2.0f, 1.0f)) {
-                        // Разные импульсы - бит определяется по порядку
-                        bitValue = (p0 < p1) ? 0 : 1;
+                    } else if (match(p0, p1, expectedRatio, 1.0f) || match(p0, p1, 1.0f, expectedRatio)) {
+                        // Разные импульсы - определяем по порядку и уровню
+                        if (p0 < p1) {
+                            // Короткий -> длинный: LOW->HIGH = 0
+                            bitValue = 0;
+                        } else {
+                            // Длинный -> короткий: HIGH->LOW = 1
+                            bitValue = 1;
+                        }
                         bitIdentified = true;
                     }
                 } else {
@@ -570,34 +637,31 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
             }
             
             // Проверяем результат (как в Flipper Zero)
-            // Для CAME требуем строгое декодирование: минимум 95% или полное
-            // Для других протоколов: >= 80% бит для валидного результата
-            // Для длинных протоколов (56 бит) требуем минимум 75% для лучшей чувствительности
+            // Для всех протоколов применяем универсальную логику определения качества
+            // Приоритет отдаем полному декодированию, но принимаем и частичное с высоким процентом
             float minBitsRatio;
-            if (strcmp(protocolName, "CAME") == 0) {
-                // CAME требует высокое качество декодирования для предотвращения ложных срабатываний
-                minBitsRatio = 0.95f; // 95% или полное декодирование
-            } else if (bitCount >= 50) {
-                minBitsRatio = 0.75f; // Для длинных протоколов
+            if (bitCount >= 50) {
+                // Для длинных протоколов (56+ бит) снижаем требования
+                minBitsRatio = 0.75f;
+            } else if (bitCount >= 32) {
+                // Для средних протоколов (32-49 бит)
+                minBitsRatio = 0.80f;
             } else {
-                minBitsRatio = 0.8f;  // Стандартный порог
+                // Для коротких протоколов (до 31 бит) требуем высокое качество
+                // Все протоколы (включая CAME) обрабатываются одинаково
+                minBitsRatio = 0.85f;
             }
             
             // Дополнительная проверка: отбрасываем подозрительные коды прямо здесь
             // Коды со всеми единицами для данного количества бит
+            // Применяется ко всем протоколам одинаково
             uint32_t maxCodeForBits = (bitCount <= 24) ? 0xFFFFFF : 0xFFFFFFFF;
             if (testCode == 0 || testCode == maxCodeForBits || testCode == 0xFFFFFFFF) {
                 continue; // Пропускаем этот вариант
             }
             
-            // Для CAME дополнительно проверяем TE - должен быть в правильном диапазоне
-            if (strcmp(protocolName, "CAME") == 0) {
-                // TE для CAME должен быть 270-380 мкс, проверяем строго
-                // Допускаем небольшое отклонение (±10%) для учета вариаций в реальных сигналах
-                if (testTE < 240.0f || testTE > 420.0f) {
-                    continue; // Пропускаем варианты с неправильным TE
-                }
-            }
+            // Проверка TE применяется через ограничения minTE/maxTE выше
+            // Все протоколы проверяются одинаково через общие ограничения
             
             // Flipper Zero требует высокое качество декодирования для принятия сигнала
             // Проверяем не только количество бит, но и качество соответствия паттерну
@@ -608,35 +672,25 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
                     // Для неполного декодирования требуем минимум 90% успешных бит
                     continue; // Пропускаем низкокачественные варианты
                 }
-                // Для CAME 24-bit и Nero Radio 56-bit приоритет отдаем полному декодированию
+                // Для всех протоколов приоритет отдаем полному декодированию
+                // Это улучшает определение всех протоколов, как для CAME
                 bool isFullDecode = (bits == bitCount);
                 bool isBetter = false;
                 
-                if ((strcmp(protocolName, "CAME") == 0 && bitCount == 24) ||
-                    (strcmp(protocolName, "Nero Radio") == 0 && bitCount == 56)) {
+                // Для всех протоколов применяем логику приоритета полного декодирования
+                if (isFullDecode && bestBits < bitCount) {
                     // Если это полное декодирование и лучшего еще не было - это лучший вариант
-                    if (isFullDecode && bestBits < bitCount) {
-                        isBetter = true;
-                    }
+                    isBetter = true;
+                } else if (isFullDecode && bestBits == bitCount) {
                     // Если уже есть полное декодирование, но текущее тоже полное
-                    // Для Nero Radio выбираем большее количество декодированных бит
-                    else if (isFullDecode && bestBits == bitCount) {
-                        // Выбираем больший код как более вероятно правильный (старшие биты)
-                        isBetter = (testCode > bestResult.code);
-                    }
+                    // Выбираем больший код как более вероятно правильный (старшие биты)
+                    isBetter = (testCode > bestResult.code);
+                } else if (!isFullDecode && bestBits < bitCount && bits > bestBits) {
                     // Если лучшего полного декодирования нет, но текущее декодировало больше бит
-                    else if (!isFullDecode && bestBits < bitCount && bits > bestBits) {
-                        isBetter = true;
-                    }
+                    isBetter = true;
+                } else if (!isFullDecode && bits > bestBits) {
                     // Если оба неполные, выбираем большее количество бит
-                    else if (!isFullDecode && bits > bestBits) {
-                        isBetter = true;
-                    }
-                } else {
-                    // Для других протоколов выбираем большее количество декодированных бит
-                    if (bits > bestBits) {
-                        isBetter = true;
-                    }
+                    isBetter = true;
                 }
                 
                 if (isBetter) {
@@ -649,10 +703,11 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
                     bestSkip = skip;
                     bestTE = testTE;
                     
-                    // Если нашли полное декодирование для CAME или Nero Radio, продолжим поиск лучшего
-                    if (((strcmp(protocolName, "CAME") == 0 && bitCount == 24) ||
-                         (strcmp(protocolName, "Nero Radio") == 0 && bitCount == 56)) && isFullDecode) {
+                    // Для всех протоколов при полном декодировании продолжаем поиск лучшего варианта
+                    // Это позволяет найти оптимальный TE и позицию начала сигнала
+                    if (isFullDecode) {
                         // Не возвращаемся сразу - продолжим поиск для проверки других вариантов
+                        // Это улучшает точность определения для всех протоколов
                     }
                 }
             }
@@ -663,13 +718,16 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
     if (bestResult.success) {
         out = bestResult;
         
-        // Логируем для CAME и Nero Radio
-        if (strcmp(protocolName, "CAME") == 0 && bestResult.bitLength >= 20) {
-            Serial.printf("[CAME] Декодировано: skip=%d, TE=%.1f, bits=%d/%d, code=%lu (0x%lX)\n", 
-                         bestSkip, bestTE, bestResult.bitLength, bitCount, bestResult.code, bestResult.code);
-        } else if (strcmp(protocolName, "Nero Radio") == 0 && bestResult.bitLength >= 40) {
-            Serial.printf("[Nero Radio] Декодировано: skip=%d, TE=%.1f, bits=%d/%d, code=%lu (0x%lX)\n", 
-                         bestSkip, bestTE, bestResult.bitLength, bitCount, bestResult.code, bestResult.code);
+        // Логируем для всех протоколов (как для CAME)
+        // Минимальный порог для логирования зависит от длины протокола
+        int minBitsForLog = (bitCount >= 50) ? (int)(bitCount * 0.7f) : 
+                           (bitCount >= 32) ? (int)(bitCount * 0.75f) : 
+                           (int)(bitCount * 0.8f);
+        
+        if (bestResult.bitLength >= minBitsForLog) {
+            Serial.printf("[%s] Декодировано: skip=%d, TE=%.1f, bits=%d/%d, code=%lu (0x%lX)\n", 
+                         protocolName, bestSkip, bestTE, bestResult.bitLength, bitCount, 
+                         bestResult.code, bestResult.code);
         }
         
         return true;
@@ -797,38 +855,33 @@ bool CC1101Manager::checkReceived() {
             return false;
         }
         
-        // Фильтр 3: Для CAME - строгая проверка качества декодирования и TE
-        if (protocolName == "CAME") {
-            // CAME должен быть декодирован минимум на 95% (23/24 или 24/24 бита)
-            float decodeRatio = static_cast<float>(bitCount) / 24.0f;
-            if (decodeRatio < 0.95f) {
-                Serial.printf("[CC1101] 🚫 Отфильтрован CAME сигнал (слишком низкое качество: %d/24 бит, %.1f%%)\n", 
-                             bitCount, decodeRatio * 100.0f);
+        // Фильтр 3: Универсальная проверка качества декодирования для всех протоколов
+        // Применяем одинаковые критерии ко всем протоколам
+        {
+            // Определяем ожидаемое количество бит для протокола из конфигурации
+            int expectedBits = getExpectedBitsForProtocol(protocolName, bitCount);
+            
+            // Проверяем качество декодирования (минимальный порог зависит от длины протокола)
+            float minRatio = (expectedBits >= 50) ? 0.75f : (expectedBits >= 32) ? 0.80f : 0.85f;
+            float decodeRatio = static_cast<float>(bitCount) / expectedBits;
+            if (decodeRatio < minRatio) {
+                Serial.printf("[CC1101] 🚫 Отфильтрован %s сигнал (слишком низкое качество: %d/%d бит, %.1f%%)\n", 
+                             protocolName.c_str(), bitCount, expectedBits, decodeRatio * 100.0f);
                 resetRawBuffer();
                 attachRawInterrupt();
                 return false;
             }
             
-            // CAME TE должен быть в диапазоне 270-380 мкс (строгая проверка)
-            if (estimatedTe < 250.0f || estimatedTe > 400.0f) {
-                Serial.printf("[CC1101] 🚫 Отфильтрован CAME сигнал (неправильный TE: %.1f мкс, ожидается 270-380 мкс)\n", estimatedTe);
-                resetRawBuffer();
-                attachRawInterrupt();
-                return false;
-            }
-            
-            // Дополнительная проверка: CAME обычно имеет определенную структуру
-            // Проверяем, что битовая строка не слишком однородна (не все единицы/нули)
+            // Проверка распределения бит для всех протоколов (отбрасываем подозрительно однородные коды)
             int onesCount = 0;
-            for (int i = 0; i < bitCount; i++) {
+            for (int i = 0; i < bitCount && i < 100; i++) { // Проверяем до 100 бит для производительности
                 if (bitSequence[i] == '1') onesCount++;
             }
-            float onesRatio = static_cast<float>(onesCount) / bitCount;
-            // CAME коды обычно имеют баланс между единицами и нулями
-            // Если более 85% или менее 15% единиц - это подозрительно
-            if (onesRatio > 0.85f || onesRatio < 0.15f) {
-                Serial.printf("[CC1101] 🚫 Отфильтрован CAME сигнал (подозрительное распределение бит: %.1f%% единиц)\n", 
-                             onesRatio * 100.0f);
+            float onesRatio = static_cast<float>(onesCount) / min(bitCount, 100);
+            // Если более 90% или менее 10% единиц - это подозрительно для любого протокола
+            if (onesRatio > 0.90f || onesRatio < 0.10f) {
+                Serial.printf("[CC1101] 🚫 Отфильтрован %s сигнал (подозрительное распределение бит: %.1f%% единиц)\n", 
+                             protocolName.c_str(), onesRatio * 100.0f);
                 resetRawBuffer();
                 attachRawInterrupt();
                 return false;
@@ -968,15 +1021,8 @@ bool CC1101Manager::checkReceived() {
     if (!isDuplicate && decoded && protocolName != "RAW/Unknown") {
         unsigned long suppressTime = DECODED_DUPLICATE_SUPPRESS_MS;
         
-        // Определяем ожидаемое количество бит для протокола
-        int expectedBits = 24; // По умолчанию для CAME
-        if (protocolName == "CAME") {
-            expectedBits = 24;
-        } else if (protocolName == "Princeton" || protocolName == "Gate TX") {
-            expectedBits = 24;
-        } else if (protocolName == "EV1527" || protocolName == "Roger") {
-            expectedBits = 28;
-        }
+        // Определяем ожидаемое количество бит для протокола из конфигурации
+        int expectedBits = getExpectedBitsForProtocol(protocolName, bitSequence.length());
         
         // Проверяем, является ли это полным декодированием
         bool isFullDecode = (bitSequence.length() >= expectedBits);
@@ -1063,36 +1109,8 @@ bool CC1101Manager::checkReceived() {
     }
     Serial.printf("[CC1101] 📡 Сигнал: переходов=%d, TE=%.1f мкс%s\n", signalLength, estimatedTe, signalInfo.c_str());
     
-    // Специальная проверка для CAME протокола - сравнение с ожидаемым ключом из Flipper Zero
-    // Ожидаемый ключ: 00 00 00 00 00 FD 85 2B (последние 3 байта: FD 85 2B)
-    // В формате 24-bit: 0xFD852B = 16611243 (big-endian) или 0x2B85FD = 2850301 (little-endian)
-    if (protocolName == "CAME" && decodedCode != 0) {
-        uint32_t expectedCodeBE = 0xFD852B;  // Big-endian: FD 85 2B
-        uint32_t expectedCodeLE = 0x2B85FD;  // Little-endian: 2B 85 FD
-        
-        bool matchesBE = (decodedCode == expectedCodeBE) || 
-                         (decodedCode > expectedCodeBE * 0.99 && decodedCode < expectedCodeBE * 1.01);
-        bool matchesLE = (decodedCode == expectedCodeLE) || 
-                         (decodedCode > expectedCodeLE * 0.99 && decodedCode < expectedCodeLE * 1.01);
-        
-        if (matchesBE || matchesLE) {
-            Serial.printf("[CAME] ✅ КОД СООТВЕТСТВУЕТ КЛЮЧУ! Декодировано: %lu (0x%lX), ожидалось: %lu (0x%lX) или %lu (0x%lX)\n",
-                         decodedCode, decodedCode, expectedCodeBE, expectedCodeBE, expectedCodeLE, expectedCodeLE);
-        } else {
-            uint32_t lower12Bits = decodedCode & 0xFFF;
-            uint32_t upper12Bits = (decodedCode >> 12) & 0xFFF;
-            uint32_t expectedLower12 = expectedCodeBE & 0xFFF;
-            uint32_t expectedUpper12 = (expectedCodeBE >> 12) & 0xFFF;
-            
-            if (lower12Bits == expectedLower12 || upper12Bits == expectedUpper12) {
-                Serial.printf("[CAME] ⚠️ Декодирована часть ключа: %lu (0x%lX), ожидалось: %lu (0x%lX)\n",
-                             decodedCode, decodedCode, expectedCodeBE, expectedCodeBE);
-            } else {
-                Serial.printf("[CAME] 🔍 Декодировано: %lu (0x%lX), ожидалось: %lu (0x%lX) или %lu (0x%lX)\n",
-                             decodedCode, decodedCode, expectedCodeBE, expectedCodeBE, expectedCodeLE, expectedCodeLE);
-            }
-        }
-    }
+    // Универсальная обработка для всех протоколов
+    // Специальные проверки для конкретных ключей могут быть добавлены здесь, но они не влияют на определение протокола
 
     lastKey.available = true;
     lastKey.timestamp = millis();
@@ -1109,18 +1127,15 @@ bool CC1101Manager::checkReceived() {
     String hexCode = String(lastKey.code, HEX);
     hexCode.toUpperCase();
     
-    // Для длинных протоколов (56 бит) показываем полный код из bitString
+    // Для длинных протоколов (56+ бит) показываем полный код из bitString
     String fullHexCode = hexCode;
-    if (protocolName == "Nero Radio" && bitSequence.length() >= 50) {
-        // Для 56-битных кодов показываем последние 8 символов (младшие 32 бита)
-        // и первые символы из полного кода
+    if (bitSequence.length() >= 50) {
+        // Для длинных кодов показываем младшие 32 бита в hex
         if (bitSequence.length() >= 56) {
-            // Пытаемся извлечь hex из битовой строки
-            // Но для простоты показываем младшие 32 бита в hex
             fullHexCode = String(lastKey.code, HEX);
             fullHexCode.toUpperCase();
-            // Добавляем индикатор, что это часть 56-битного кода
-            fullHexCode = "...XXXX" + fullHexCode; // XXXX будет заменено на старшие биты
+            // Добавляем индикатор, что это часть длинного кода
+            fullHexCode = "..." + fullHexCode;
         }
     }
     
@@ -1130,8 +1145,8 @@ bool CC1101Manager::checkReceived() {
         displayData = displayData.substring(0, 27) + "...";
     }
     
-    // Для Nero Radio показываем дополнительную информацию
-    if (protocolName == "Nero Radio") {
+    // Для длинных протоколов показываем дополнительную информацию
+    if (bitSequence.length() >= 50) {
         Serial.printf("[CC1101] 🔑 Ключ: %s (56-bit) | Код: %lu (0x%s) | Битовая строка: %s | RSSI: %d dBm | TE: %.0f мкс | Частота: %.2f МГц\n",
                       lastKey.protocol.c_str(), lastKey.code, hexCode.c_str(), 
                       bitSequence.length() > 60 ? (bitSequence.substring(0, 60) + "...").c_str() : bitSequence.c_str(),
@@ -1328,6 +1343,66 @@ bool CC1101Manager::setFrequency(float freq) {
 
 float CC1101Manager::getFrequency() {
     return currentFrequency;
+}
+
+// Установка модуляции (для будущего использования)
+// Пока реализована только базовая структура, полная реализация будет добавлена позже
+bool CC1101Manager::setModulation(ModulationType mod) {
+    if (!radio) return false;
+    
+    CC1101* cc = static_cast<CC1101*>(radio);
+    int state = RADIOLIB_ERR_NONE;
+    
+    // Сохраняем состояние модуля перед изменением
+    state = cc->standby();
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.println("[CC1101] ⚠️ Ошибка перевода в standby для смены модуляции");
+        return false;
+    }
+    
+    // Устанавливаем модуляцию в зависимости от типа
+    switch (mod) {
+        case MODULATION_ASK_OOK:
+            state = cc->setOOK(true);
+            if (state == RADIOLIB_ERR_NONE) {
+                currentModulation = MODULATION_ASK_OOK;
+                Serial.println("[CC1101] Модуляция установлена: ASK/OOK");
+            }
+            break;
+            
+        case MODULATION_FSK_2FSK:
+            state = cc->setOOK(false); // Отключаем OOK для FSK
+            // Для FSK нужны дополнительные настройки (битрейт, девиация)
+            // Пока базовая структура, полная реализация будет добавлена позже
+            if (state == RADIOLIB_ERR_NONE) {
+                currentModulation = MODULATION_FSK_2FSK;
+                Serial.println("[CC1101] Модуляция установлена: FSK/2-FSK (базовая)");
+            }
+            break;
+            
+        case MODULATION_MSK:
+        case MODULATION_GFSK:
+            // MSK и GFSK требуют специальных настроек
+            // Пока базовая структура, полная реализация будет добавлена позже
+            Serial.println("[CC1101] ⚠️ MSK/GFSK модуляция пока не реализована полностью");
+            return false;
+            
+        default:
+            Serial.println("[CC1101] ⚠️ Неизвестный тип модуляции");
+            return false;
+    }
+    
+    if (state != RADIOLIB_ERR_NONE) {
+        Serial.printf("[CC1101] ⚠️ Ошибка установки модуляции, код: %d\n", state);
+        return false;
+    }
+    
+    return true;
+}
+
+// Получение текущей модуляции
+ModulationType CC1101Manager::getModulation() {
+    return currentModulation;
 }
 
 bool CC1101Manager::startReceive() {

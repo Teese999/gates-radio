@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "WiFiManager.h"
+#include "infrastructure/Logger.h"
 
 namespace WiFiManager {
   static Preferences* preferences = nullptr;
@@ -18,26 +19,25 @@ namespace WiFiManager {
     ssid = preferences->getString("wifi_ssid", "");
     password = preferences->getString("wifi_pass", "");
     
-    Serial.println("[WiFiManager] WiFi Manager инициализирован");
+    Logger::info("[WiFiManager] WiFi Manager инициализирован");
   }
 
   void connectToWiFi() {
     if (ssid.length() == 0) {
-      Serial.println("[WiFiManager] Нет сохраненных данных WiFi");
-      Serial.println("[WiFiManager] Создание точки доступа...");
+      Logger::info("[WiFiManager] Нет сохраненных данных WiFi");
+      Logger::info("[WiFiManager] Создание точки доступа...");
       
       // Создание точки доступа для настройки
       WiFi.mode(WIFI_AP);
       WiFi.softAP("SmartGate-Config", "12345678");
       
       IPAddress IP = WiFi.softAPIP();
-      Serial.print("[WiFiManager] IP точки доступа: ");
-      Serial.println(IP);
+      Logger::info("[WiFiManager] IP точки доступа: " + IP.toString());
       return;
     }
     
-    Serial.println("[WiFiManager] Подключение к WiFi...");
-    Serial.printf("[WiFiManager] SSID: %s\n", ssid.c_str());
+    Logger::info("[WiFiManager] Подключение к WiFi...");
+    Logger::logf("info", "[WiFiManager] SSID: %s", ssid.c_str());
     
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), password.c_str());
@@ -45,24 +45,21 @@ namespace WiFiManager {
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 20) {
       delay(500);
-      Serial.print(".");
       attempts++;
     }
     
     if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\n[WiFiManager] ✓ Подключено к WiFi!");
-      Serial.print("[WiFiManager] IP адрес: ");
-      Serial.println(WiFi.localIP());
+      Logger::success("[WiFiManager] ✓ Подключено к WiFi!");
+      Logger::info("[WiFiManager] IP адрес: " + WiFi.localIP().toString());
     } else {
-      Serial.println("\n[WiFiManager] ✗ Не удалось подключиться");
-      Serial.println("[WiFiManager] Создание точки доступа...");
+      Logger::warning("[WiFiManager] ✗ Не удалось подключиться");
+      Logger::info("[WiFiManager] Создание точки доступа...");
       
       WiFi.mode(WIFI_AP);
       WiFi.softAP("SmartGate-Config", "12345678");
       
       IPAddress IP = WiFi.softAPIP();
-      Serial.print("[WiFiManager] IP точки доступа: ");
-      Serial.println(IP);
+      Logger::info("[WiFiManager] IP точки доступа: " + IP.toString());
     }
   }
 
@@ -76,7 +73,7 @@ namespace WiFiManager {
     lastCheckTime = currentTime;
     
     if (WiFi.status() != WL_CONNECTED && ssid.length() > 0) {
-      Serial.println("[WiFiManager] Соединение потеряно. Переподключение...");
+      Logger::warning("[WiFiManager] Соединение потеряно. Переподключение...");
       connectToWiFi();
     }
   }
@@ -89,7 +86,7 @@ namespace WiFiManager {
     server->onNotFound(handleNotFound);
     
     server->begin();
-    Serial.println("[WiFiManager] Веб-сервер запущен");
+    Logger::success("[WiFiManager] Веб-сервер запущен");
   }
 
   void handleRoot() {
@@ -125,7 +122,7 @@ namespace WiFiManager {
 )";
     
     server->send(200, "text/html", html);
-    Serial.println("[WiFiManager] Главная страница отправлена");
+    Logger::info("[WiFiManager] Главная страница отправлена");
   }
 
   void handleWifiSave() {
@@ -136,8 +133,8 @@ namespace WiFiManager {
       preferences->putString("wifi_ssid", ssid);
       preferences->putString("wifi_pass", password);
       
-      Serial.println("[WiFiManager] WiFi настройки сохранены");
-      Serial.printf("[WiFiManager] SSID: %s\n", ssid.c_str());
+      Logger::success("[WiFiManager] WiFi настройки сохранены");
+      Logger::logf("info", "[WiFiManager] SSID: %s", ssid.c_str());
       
       String html = R"(
 <!DOCTYPE html>
@@ -173,7 +170,7 @@ namespace WiFiManager {
   void sendActionToAlice(const String& action) {
     // TODO: Реализация интеграции с Алисой (Домовенок Кузя)
     // Здесь будет код для отправки команды через MQTT или HTTP API
-    Serial.printf("[WiFiManager] Отправка действия в Алису: %s\n", action.c_str());
+    Logger::logf("info", "[WiFiManager] Отправка действия в Алису: %s", action.c_str());
   }
 
   bool isConnected() {

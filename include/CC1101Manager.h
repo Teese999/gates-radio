@@ -3,6 +3,15 @@
 
 #include <Arduino.h>
 #include <RadioLib.h>
+#include "SubGhzProtocols.h"
+
+// Типы модуляции (как в Flipper Zero)
+enum ModulationType {
+    MODULATION_ASK_OOK = 0,  // ASK/OOK (амплитудная модуляция)
+    MODULATION_FSK_2FSK,     // FSK (частотная модуляция, 2-FSK)
+    MODULATION_MSK,          // MSK (минимальная манипуляция)
+    MODULATION_GFSK          // GFSK (Gaussian FSK)
+};
 
 // Структура для хранения принятого ключа
 struct ReceivedKey {
@@ -28,6 +37,12 @@ public:
     
     // Получение текущей частоты
     static float getFrequency();
+    
+    // Установка модуляции (для будущего использования)
+    static bool setModulation(ModulationType mod);
+    
+    // Получение текущей модуляции
+    static ModulationType getModulation();
     
     // Начать прослушивание
     static bool startReceive();
@@ -65,6 +80,7 @@ public:
 private:
     static CC1101* radio;
     static float currentFrequency;
+    static ModulationType currentModulation;
     static volatile bool receivedFlag;
     static ReceivedKey lastKey;
     static int gdo0PinNumber;
@@ -117,6 +133,7 @@ private:
     static bool decodeProtocolRCSwitch(const PulsePattern* pulses, int length, float baseDelay,
                                        float highRatio, float lowRatio, bool inverted,
                                        int bitCount, const char* protocolName,
+                                       const SubGhzProtocolConfig* protoConfig,
                                        DecodedResult& out);
     
     // Вспомогательная функция для определения TE из сигнала (как в Flipper Zero)

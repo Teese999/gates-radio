@@ -3,6 +3,7 @@ import './App.css';
 import WiFiPage from './pages/WiFiPage';
 import PhonePage from './pages/PhonePage';
 import KeyPage from './pages/KeyPage';
+import SettingsPage from './pages/SettingsPage';
 
 // WebSocket подключение
 const WS_URL = window.location.hostname === 'smartgate.local' 
@@ -32,7 +33,7 @@ function App() {
   const [recentKeys, setRecentKeys] = useState<KeyData[]>([]);
   const [notification, setNotification] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [currentPage, setCurrentPage] = useState<'home' | 'wifi' | 'phones' | 'keys'>('home');
+  const [currentPage, setCurrentPage] = useState<'home' | 'wifi' | 'phones' | 'keys' | 'settings'>('home');
 
   // Добавление лога
   const addLog = (message: string, type: 'info' | 'error' | 'success' | 'warning' = 'info') => {
@@ -235,6 +236,20 @@ function App() {
     );
   }
 
+  if (currentPage === 'settings') {
+    return (
+      <div className="App">
+        <div className="container">
+          <SettingsPage 
+            onBack={() => setCurrentPage('home')}
+            apiCall={apiCall}
+            addLog={addLog}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="App">
       <div className="container">
@@ -277,6 +292,12 @@ function App() {
             <div className="stat-icon">🔑</div>
             <div className="stat-number">{keyCount}</div>
             <div className="stat-label">Ключи 433MHz</div>
+          </div>
+          
+          <div className="stat-card clickable" onClick={() => setCurrentPage('settings')}>
+            <div className="stat-icon">⚙️</div>
+            <div className="stat-number">—</div>
+            <div className="stat-label">Настройки</div>
           </div>
         </div>
 

@@ -11,6 +11,7 @@
 #include "CC1101Manager.h"
 #include "GateControl.h"
 #include "GSMManager.h"
+#include "infrastructure/Logger.h"
 
 // --- Константы пинов ---
 // Пины для CC1101 (SPI + управляющие)
@@ -725,6 +726,10 @@ void setup() {
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
   Serial.println("[OK] WebSocket сервер запущен на порту 81");
+  
+  // Инициализация Logger (после WebSocket)
+  Logger::init(&webSocket);
+  Serial.println("[OK] Logger инициализирован");
 
   // Настройка веб-сервера
   server.on("/", handleRoot);

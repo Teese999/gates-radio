@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "GSMManager.h"
+#include "infrastructure/Logger.h"
 #include <Preferences.h>
 
 namespace GSMManager {
@@ -27,11 +28,11 @@ namespace GSMManager {
     for (int i = 0; i < numberCount; i++) {
       String keyName = "num" + String(i);
       trustedNumbers[i] = prefs.getString(keyName.c_str(), "");
-      Serial.printf("[GSMManager] Загружен номер %d: %s\n", i, trustedNumbers[i].c_str());
+      Logger::logf("info", "[GSMManager] Загружен номер %d: %s", i, trustedNumbers[i].c_str());
     }
     
-    Serial.println("[GSMManager] GSM Manager инициализирован (заглушка)");
-    Serial.println("[GSMManager] ⚠️ Для полной работы подключите модуль SIM800L");
+    Logger::info("GSM Manager инициализирован (заглушка)");
+    Logger::warning("Для полной работы подключите модуль SIM800L");
   }
 
   void handleGSM() {
@@ -59,13 +60,13 @@ namespace GSMManager {
   void addTrustedNumber(const String& number) {
     // Проверка, не добавлен ли уже этот номер
     if (isTrustedNumber(number)) {
-      Serial.println("[GSMManager] Номер уже существует");
+      Logger::warning("GSM номер уже существует: " + number);
       return;
     }
     
     // Проверка, не превышено ли максимальное количество номеров
     if (numberCount >= MAX_NUMBERS) {
-      Serial.println("[GSMManager] Достигнуто максимальное количество номеров");
+      Logger::warning("Достигнуто максимальное количество GSM номеров");
       return;
     }
     
@@ -77,7 +78,7 @@ namespace GSMManager {
     String keyName = "num" + String(numberCount - 1);
     prefs.putString(keyName.c_str(), number);
     
-    Serial.printf("[GSMManager] Номер добавлен: %s (всего: %d)\n", number.c_str(), numberCount);
+    Logger::success("GSM номер добавлен: " + number + " (всего: " + String(numberCount) + ")");
   }
 
   void removeTrustedNumber(const String& number) {
@@ -92,7 +93,7 @@ namespace GSMManager {
     }
     
     if (indexToRemove == -1) {
-      Serial.println("[GSMManager] Номер не найден");
+      Logger::warning("GSM номер не найден: " + number);
       return;
     }
     
@@ -111,7 +112,7 @@ namespace GSMManager {
       prefs.putString(keyName.c_str(), trustedNumbers[i]);
     }
     
-    Serial.printf("[GSMManager] Номер удален: %s (осталось: %d)\n", number.c_str(), numberCount);
+    Logger::warning("GSM номер удален: " + number + " (осталось: " + String(numberCount) + ")");
   }
 }
 
