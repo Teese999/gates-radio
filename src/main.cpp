@@ -6,6 +6,8 @@
 #include <SPIFFS.h>
 #include <ESPmDNS.h>
 #include <WebSocketsServer.h>
+#include <algorithm>
+#include <vector>
 
 // Подключение кастомных модулей
 #include "CC1101Manager.h"
@@ -43,21 +45,43 @@ struct PhoneEntry {
 };
 
 struct KeyEntry {
-  uint32_t code;
-  String name;
-  bool enabled;
-  String rawData;
-  int rssi;
-  float frequency;
-  String protocol;
-  String modulation;
-  unsigned long timestamp;
+  uint32_t code;              // Младшие 32 бита кода (для совместимости)
+  String name;                // Имя ключа
+  bool enabled;               // Активен ли ключ
+  String protocol;            // Протокол (CAME, Keeloq, Princeton и т.д.)
+  String bitString;           // Полная битовая строка (для точного сравнения)
+  int bitLength;              // Количество бит
+  float te;                   // Базовый период (Time Element) в мкс
+  float frequency;            // Частота в МГц
+  String modulation;          // Модуляция (AM650, FM476 и т.д.)
+  String rawData;             // RAW данные (для отображения)
+  int rssi;                   // RSSI при обучении
+  unsigned long timestamp;    // Время добавления
 };
 
 struct WiFiNetwork {
   String ssid;
   int rssi;
   int encryption;
+};
+
+// Структура для отслеживания распознавания ключей (верификация сигнала)
+struct KeyRecognition {
+  uint32_t code;
+  String protocol;
+  String bitString;
+  int repeatCount;
+  unsigned long firstSeen;
+  unsigned long lastSeen;
+  float frequency;
+  int requiredRepeats;
+  int lastRssi;
+  bool fullDecode;
+  float te;
+  
+  KeyRecognition()
+    : code(0), repeatCount(0), firstSeen(0), lastSeen(0), frequency(0.0f),
+      requiredRepeats(2), lastRssi(0), fullDecode(false), te(0.0f) {}
 };
 
 // Единая структура состояния системы
@@ -69,17 +93,44 @@ struct SystemState {
   bool wifiConnected;
   bool learningMode;
   float currentFrequency;
+  
+  // Временное хранилище для верификации сигналов
+  std::vector<KeyRecognition> pendingRecognitions;
 };
 
 // --- Хранилище данных ---
 SystemState systemState;
 std::vector<WiFiNetwork> wifiNetworks;
 
+// История обнаруженных сигналов (для remove duplicates)
+struct RecentDetection {
+  String protocol;
+  uint32_t code;
+  String bitString;
+  uint32_t hash;
+  unsigned long firstSeen;
+  unsigned long lastSeen;
+  int count;
+};
+
+static std::vector<RecentDetection> detectionHistory;
+
 // --- Объявления функций ---
 void sendWebSocketEvent(const char* event, const char* data);
 void sendLog(String message, const char* type);
 void saveSystemState();
 void loadSystemState();
+
+// Функция улучшенного сравнения ключей (как во Flipper Zero)
+bool isKeyMatch(const KeyEntry& saved, const ReceivedKey& received, const String& receivedBitString, int receivedBitLength, float receivedTe);
+// Функция сравнения битовых строк с допуском
+bool compareBitStrings(const String& str1, const String& str2, float minSimilarity = 0.95f);
+// Функция верификации сигнала (требует повторения)
+bool verifyKeySignal(const ReceivedKey& received, const String& bitString, int bitLength, float te, bool learningMode = false);
+// Очистка истории обнаруженных сигналов
+void cleanupDetectionHistory();
+// Проверка дубликатов (как remove duplicate во Flipper)
+bool isDuplicateForDisplay(const ReceivedKey& key);
 
 // --- WebSocket функции ---
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
@@ -235,11 +286,14 @@ void saveSystemState() {
     keyObj["code"] = key.code;
     keyObj["name"] = key.name;
     keyObj["enabled"] = key.enabled;
+    keyObj["protocol"] = key.protocol;
+    keyObj["bitString"] = key.bitString;
+    keyObj["bitLength"] = key.bitLength;
+    keyObj["te"] = key.te;
+    keyObj["frequency"] = key.frequency;
+    keyObj["modulation"] = key.modulation;
     keyObj["rawData"] = key.rawData;
     keyObj["rssi"] = key.rssi;
-    keyObj["frequency"] = key.frequency;
-    keyObj["protocol"] = key.protocol;
-    keyObj["modulation"] = key.modulation;
     keyObj["timestamp"] = key.timestamp;
   }
   
@@ -262,7 +316,291 @@ void saveSystemState() {
   Serial.println("[NVS] Состояние системы сохранено");
 }
 
-// Загрузка всего состояния системы из NVS
+// Функция сравнения битовых строк с допуском
+bool compareBitStrings(const String& str1, const String& str2, float minSimilarity) {
+  if (str1.length() == 0 || str2.length() == 0) {
+    return false;
+  }
+  
+  int minLen = min(str1.length(), str2.length());
+  int maxLen = max(str1.length(), str2.length());
+  
+  if (minLen == 0) return false;
+  
+  // Сравниваем по минимальной длине
+  int matches = 0;
+  for (int i = 0; i < minLen; i++) {
+    if (str1[i] == str2[i]) {
+      matches++;
+    }
+  }
+  
+  float similarity = static_cast<float>(matches) / maxLen;
+  return similarity >= minSimilarity;
+}
+
+// Функция улучшенного сравнения ключей (как во Flipper Zero)
+bool isKeyMatch(const KeyEntry& saved, const ReceivedKey& received, const String& receivedBitString, int receivedBitLength, float receivedTe) {
+  // 1. Протокол должен совпадать (строгое сравнение)
+  if (saved.protocol != received.protocol) {
+    return false;
+  }
+  
+  // 2. Частота должна совпадать (допуск ±1 МГц)
+  float currentFreq = CC1101Manager::getFrequency();
+  float freqDiff = (saved.frequency > currentFreq) ? 
+                   (saved.frequency - currentFreq) : 
+                   (currentFreq - saved.frequency);
+  if (freqDiff > 1.0f) {
+    return false;
+  }
+  
+  // 3. Для всех протоколов: если есть битовая строка - используем её для сравнения
+  if (saved.bitString.length() > 0 && receivedBitString.length() > 0) {
+    // Для коротких протоколов (≤32 бит) требуем точное совпадение
+    if (saved.bitLength <= 32) {
+      return (saved.bitString == receivedBitString);
+    }
+    // Для длинных протоколов (>32 бит) допускаем небольшие отличия (95% совпадение)
+    else {
+      return compareBitStrings(saved.bitString, receivedBitString, 0.95f);
+    }
+  }
+  
+  // 4. Fallback: сравнение по коду (если нет битовой строки)
+  // Это для старых ключей или протоколов без битовой строки
+  if (saved.code == received.code) {
+    // Дополнительная проверка: TE должен быть примерно одинаковым (допуск ±30%)
+    if (saved.te > 0 && receivedTe > 0) {
+      float teDiff = (saved.te > receivedTe) ? (saved.te / receivedTe) : (receivedTe / saved.te);
+      if (teDiff > 1.3f) { // Разница более 30%
+        return false;
+      }
+    }
+    return true;
+  }
+  
+  return false;
+}
+
+// Функция верификации сигнала (адаптивная)
+// Возвращает true, если сигнал подтвержден достаточным количеством повторений
+// В режиме обучения (learningMode) сигнал принимается сразу, как во Flipper Zero
+bool verifyKeySignal(const ReceivedKey& received, const String& bitString, int bitLength, float te, bool learningMode) {
+  if (learningMode) {
+    return true;
+  }
+
+  const unsigned long VERIFICATION_WINDOW_MS = 1500; // Временное окно для повторений
+  const unsigned long RESET_TIMEOUT_MS = 2500;        // Максимальное время ожидания между сериями
+  const int MAX_REPEATS = 5;
+
+  bool hasBitString = (bitLength > 0 && bitString.length() > 0);
+  bool isFullDecode = (received.protocol != "RAW/Unknown" && hasBitString);
+  bool isLongProtocol = (bitLength >= 56);
+  bool isVeryLongProtocol = (bitLength >= 80);
+  bool isRaw = (received.protocol == "RAW/Unknown");
+
+  // Определяем, сколько повторов требуется для подтверждения
+  int requiredRepeats = 2; // Базовое значение
+
+  if (isFullDecode && received.rssi > -68 && !isLongProtocol) {
+    requiredRepeats = 1;
+  }
+
+  if (isRaw || received.rssi < -85) {
+    requiredRepeats = std::max(requiredRepeats, 3);
+  }
+
+  if (isLongProtocol && received.rssi < -80) {
+    requiredRepeats = std::max(requiredRepeats, 3);
+  }
+
+  if (isVeryLongProtocol) {
+    requiredRepeats = std::max(requiredRepeats, 3);
+  }
+
+  requiredRepeats = std::min(requiredRepeats, MAX_REPEATS);
+
+  // Если достаточно одного повторения - подтверждаем немедленно
+  if (requiredRepeats <= 1) {
+    return true;
+  }
+
+  unsigned long now = millis();
+
+  // Ищем существующее распознавание
+  KeyRecognition* recognition = nullptr;
+  for (auto& rec : systemState.pendingRecognitions) {
+    if (rec.protocol == received.protocol &&
+        rec.code == received.code &&
+        (bitString.length() == 0 || compareBitStrings(rec.bitString, bitString, 0.95f))) {
+      recognition = &rec;
+      break;
+    }
+  }
+
+  if (recognition == nullptr) {
+    // Создаем новую запись о распознавании
+    KeyRecognition newRec;
+    newRec.code = received.code;
+    newRec.protocol = received.protocol;
+    newRec.bitString = bitString;
+    newRec.repeatCount = 1;
+    newRec.firstSeen = now;
+    newRec.lastSeen = now;
+    newRec.frequency = CC1101Manager::getFrequency();
+    newRec.requiredRepeats = requiredRepeats;
+    newRec.lastRssi = received.rssi;
+    newRec.fullDecode = isFullDecode;
+    newRec.te = te;
+
+    systemState.pendingRecognitions.push_back(newRec);
+    return false; // Нужны дополнительные повторы
+  }
+
+  // Обновляем существующую запись
+  // Если слишком много времени прошло между повторениями — начинаем заново
+  if ((now - recognition->lastSeen) > RESET_TIMEOUT_MS) {
+    recognition->repeatCount = 1;
+    recognition->firstSeen = now;
+    recognition->requiredRepeats = requiredRepeats;
+  } else {
+    // Накапливаем повторы
+    recognition->repeatCount++;
+    // Не даем выйти за пределы MAX_REPEATS
+    if (recognition->repeatCount > MAX_REPEATS) {
+      recognition->repeatCount = MAX_REPEATS;
+    }
+    // Если новый сигнал сильнее/качественнее, можем снизить требуемое число повторов
+    if (requiredRepeats < recognition->requiredRepeats) {
+      recognition->requiredRepeats = requiredRepeats;
+    }
+  }
+
+  recognition->lastSeen = now;
+  recognition->lastRssi = received.rssi;
+  recognition->fullDecode = recognition->fullDecode || isFullDecode;
+  recognition->te = te;
+
+  // Если недостаточно повторов в текущем окне — продолжаем ждать
+  if ((now - recognition->firstSeen) > VERIFICATION_WINDOW_MS &&
+      recognition->repeatCount < recognition->requiredRepeats) {
+    // Окно закончилось — начинаем новую серию с текущего сигнала
+    recognition->repeatCount = 1;
+    recognition->firstSeen = now;
+    recognition->requiredRepeats = requiredRepeats;
+    recognition->bitString = bitString;
+    recognition->fullDecode = isFullDecode;
+    return false;
+  }
+
+  // Подтверждаем, если достигли требуемого количества повторов
+  if (recognition->repeatCount >= recognition->requiredRepeats) {
+    // Удаляем запись
+    systemState.pendingRecognitions.erase(
+      std::remove_if(
+        systemState.pendingRecognitions.begin(),
+        systemState.pendingRecognitions.end(),
+        [&](const KeyRecognition& rec) {
+          return rec.code == recognition->code && rec.protocol == recognition->protocol;
+        }
+      ),
+      systemState.pendingRecognitions.end()
+    );
+
+    Serial.printf("[Verify] ✅ Подтверждено: протокол=%s, повторов=%d (требовалось %d), RSSI=%d dBm\n",
+                  received.protocol.c_str(), recognition->repeatCount, recognition->requiredRepeats, received.rssi);
+    return true;
+  }
+
+  return false;
+}
+
+// Очистка устаревших распознаваний
+void cleanupOldRecognitions() {
+  const unsigned long CLEANUP_TIMEOUT_MS = 5000; // 5 секунд
+  unsigned long now = millis();
+  
+  systemState.pendingRecognitions.erase(
+    std::remove_if(
+      systemState.pendingRecognitions.begin(),
+      systemState.pendingRecognitions.end(),
+      [now](const KeyRecognition& rec) {
+        return (now - rec.lastSeen) > CLEANUP_TIMEOUT_MS;
+      }
+    ),
+    systemState.pendingRecognitions.end()
+  );
+}
+
+// Очистка истории обнаруженных сигналов (remove duplicates)
+void cleanupDetectionHistory() {
+  const unsigned long HISTORY_TIMEOUT_MS = 60000; // 60 секунд
+  unsigned long now = millis();
+
+  detectionHistory.erase(
+    std::remove_if(
+      detectionHistory.begin(),
+      detectionHistory.end(),
+      [now, HISTORY_TIMEOUT_MS](const RecentDetection& rec) {
+        return (now - rec.lastSeen) > HISTORY_TIMEOUT_MS;
+      }
+    ),
+    detectionHistory.end()
+  );
+
+  const size_t MAX_HISTORY_SIZE = 120;
+  if (detectionHistory.size() > MAX_HISTORY_SIZE) {
+    detectionHistory.erase(
+      detectionHistory.begin(),
+      detectionHistory.begin() + (detectionHistory.size() - MAX_HISTORY_SIZE)
+    );
+  }
+}
+
+// Проверка на дубликаты (аналог remove duplicate во Flipper)
+bool isDuplicateForDisplay(const ReceivedKey& key) {
+  unsigned long now = millis();
+
+  for (auto& rec : detectionHistory) {
+    bool sameProtocol = (rec.protocol == key.protocol);
+    bool matchByBits = false;
+    bool matchByCode = false;
+
+    if (sameProtocol) {
+      if (key.bitString.length() > 0 && rec.bitString.length() > 0) {
+        matchByBits = (rec.bitString == key.bitString);
+      }
+      if (!matchByBits && key.bitString.length() == 0 && rec.bitString.length() == 0) {
+        matchByCode = (rec.code == key.code);
+      }
+    }
+
+    bool rawMatch = (key.protocol == "RAW/Unknown" && rec.protocol == "RAW/Unknown" && key.hash != 0 && rec.hash == key.hash);
+
+    if ((sameProtocol && (matchByBits || matchByCode)) || rawMatch) {
+      rec.lastSeen = now;
+      rec.count++;
+      rec.hash = key.hash;
+      return true;
+    }
+  }
+
+  RecentDetection rec;
+  rec.protocol = key.protocol;
+  rec.code = key.code;
+  rec.bitString = key.bitString;
+  rec.hash = key.hash;
+  rec.firstSeen = now;
+  rec.lastSeen = now;
+  rec.count = 1;
+  detectionHistory.push_back(rec);
+
+  return false;
+}
+
+  // Загрузка всего состояния системы из NVS
 void loadSystemState() {
   preferences.begin("system", true);
   String jsonString = preferences.getString("state", "{}");
@@ -295,12 +633,31 @@ void loadSystemState() {
       key.code = keyObj["code"].as<uint32_t>();
       key.name = keyObj["name"].as<String>();
       key.enabled = keyObj["enabled"].as<bool>();
+      key.protocol = keyObj["protocol"] | "RAW/Custom";
+      key.bitString = keyObj["bitString"] | "";  // Новое поле
+      key.bitLength = keyObj["bitLength"] | 0;   // Новое поле
+      key.te = keyObj["te"] | 400.0f;            // Новое поле (дефолт 400 мкс)
+      key.frequency = keyObj["frequency"] | 433.92;
+      key.modulation = keyObj["modulation"] | "ASK/OOK";
       key.rawData = keyObj["rawData"] | "";
       key.rssi = keyObj["rssi"] | 0;
-      key.frequency = keyObj["frequency"] | 433.92;
-      key.protocol = keyObj["protocol"] | "RAW/Custom";
-      key.modulation = keyObj["modulation"] | "ASK/OOK";
       key.timestamp = keyObj["timestamp"].as<unsigned long>();
+      
+      // Миграция старых ключей: если нет bitLength, пытаемся определить из протокола
+      if (key.bitLength == 0 && key.protocol != "RAW/Custom" && key.protocol != "RAW/Unknown") {
+        // Пытаемся определить количество бит из протокола
+        if (key.protocol.indexOf("12") >= 0) {
+          key.bitLength = 12;
+        } else if (key.protocol.indexOf("24") >= 0) {
+          key.bitLength = 24;
+        } else if (key.protocol.indexOf("64") >= 0 || key.protocol == "Keeloq") {
+          key.bitLength = 64;
+        } else if (key.protocol.indexOf("56") >= 0) {
+          key.bitLength = 56;
+        } else {
+          key.bitLength = 24; // Дефолт
+        }
+      }
       
       if (key.code > 0) {
         systemState.keys433.push_back(key);
@@ -448,11 +805,14 @@ void handleKeysAPI() {
       keyObj["code"] = key.code;
       keyObj["name"] = key.name;
       keyObj["enabled"] = key.enabled;
+      keyObj["protocol"] = key.protocol;
+      keyObj["bitString"] = key.bitString;
+      keyObj["bitLength"] = key.bitLength;
+      keyObj["te"] = key.te;
+      keyObj["frequency"] = key.frequency;
+      keyObj["modulation"] = key.modulation;
       keyObj["rawData"] = key.rawData;
       keyObj["rssi"] = key.rssi;
-      keyObj["frequency"] = key.frequency;
-      keyObj["protocol"] = key.protocol;
-      keyObj["modulation"] = key.modulation;
       keyObj["timestamp"] = key.timestamp;
     }
     
@@ -854,17 +1214,25 @@ void loop() {
     sendLog("🔍 Прерываний: " + String(intCount) + ", RSSI: " + String(rssi) + " dBm", "info");
   }
 
+  // Очистка устаревших распознаваний (каждые 5 секунд)
+  static unsigned long lastCleanup = 0;
+  if (millis() - lastCleanup > 5000) {
+    cleanupOldRecognitions();
+    cleanupDetectionHistory();
+    lastCleanup = millis();
+  }
+
   // Обработка CC1101 RF сигналов
   if (CC1101Manager::checkReceived()) {
     ReceivedKey receivedKey = CC1101Manager::getReceivedKey();
     
     if (receivedKey.code != 0) {
-      // Проверяем, есть ли уже такой ключ
-      bool keyExists = false;
+      // Используем улучшенное сравнение ключей
       KeyEntry* existingKey = nullptr;
+      bool keyExists = false;
       
       for (auto& key : systemState.keys433) {
-        if (key.code == receivedKey.code) {
+        if (isKeyMatch(key, receivedKey, receivedKey.bitString, receivedKey.bitLength, receivedKey.te)) {
           keyExists = true;
           existingKey = &key;
           break;
@@ -875,17 +1243,25 @@ void loop() {
         Serial.println("[CC1101] Режим обучения активен - обрабатываем ключ");
         sendLog("🎓 Режим обучения: обрабатываем полученный ключ", "info");
         
-        // Режим обучения - добавляем новый ключ
+        // Режим обучения - добавляем новый ключ с полной информацией
         if (!keyExists) {
           KeyEntry newKey;
           newKey.code = receivedKey.code;
-          newKey.name = "Ключ 0x" + String(receivedKey.code, HEX);
+          // Генерируем имя на основе протокола
+          if (receivedKey.protocol != "RAW/Unknown") {
+            newKey.name = receivedKey.protocol + "-0x" + String(receivedKey.code, HEX);
+          } else {
+            newKey.name = "Ключ 0x" + String(receivedKey.code, HEX);
+          }
           newKey.enabled = true;
+          newKey.protocol = receivedKey.protocol;
+          newKey.bitString = receivedKey.bitString;
+          newKey.bitLength = receivedKey.bitLength;
+          newKey.te = receivedKey.te;
+          newKey.frequency = CC1101Manager::getFrequency();
+          newKey.modulation = receivedKey.modulation;
           newKey.rawData = receivedKey.rawData;
           newKey.rssi = receivedKey.rssi;
-          newKey.frequency = CC1101Manager::getFrequency();
-          newKey.protocol = receivedKey.protocol;
-          newKey.modulation = receivedKey.modulation;
           newKey.timestamp = receivedKey.timestamp;
           
           systemState.keys433.push_back(newKey);
@@ -896,54 +1272,132 @@ void loop() {
           // Сохраняем состояние
           saveSystemState();
           
-          Serial.println("[CC1101] ✅ Новый ключ добавлен: " + String(receivedKey.code));
+          Serial.println("[CC1101] ✅ Новый ключ добавлен: " + newKey.name);
+          Serial.printf("[CC1101] Протокол: %s, Бит: %d, TE: %.1f мкс\n", 
+                       newKey.protocol.c_str(), newKey.bitLength, newKey.te);
           sendLog("🔑 Новый ключ добавлен: " + newKey.name, "success");
           
           // Отправляем событие о добавлении ключа
           String keyData = "{\"code\":" + String(receivedKey.code) + 
                           ",\"name\":\"" + newKey.name + "\"" +
                           ",\"enabled\":" + String(newKey.enabled) +
+                          ",\"protocol\":\"" + newKey.protocol + "\"" +
+                          ",\"bitLength\":" + String(newKey.bitLength) +
                           ",\"rawData\":\"" + newKey.rawData + "\"" +
                           ",\"rssi\":" + String(newKey.rssi) +
                           ",\"frequency\":" + String(newKey.frequency) +
-                          ",\"protocol\":\"" + newKey.protocol + "\"" +
                           ",\"modulation\":\"" + newKey.modulation + "\"" +
                           ",\"timestamp\":" + String(newKey.timestamp) + "}";
           sendWebSocketEvent("key_added", keyData.c_str());
+
+          String learnEvent = "{\"code\":" + String(receivedKey.code) +
+                               ",\"rawData\":\"" + receivedKey.rawData + "\"" +
+                               ",\"bitString\":\"" + receivedKey.bitString + "\"" +
+                               ",\"bitLength\":" + String(receivedKey.bitLength) +
+                               ",\"rssi\":" + String(receivedKey.rssi) +
+                               ",\"snr\":" + String(receivedKey.snr) +
+                               ",\"frequency\":" + String(CC1101Manager::getFrequency()) +
+                               ",\"protocol\":\"" + receivedKey.protocol + "\"" +
+                               ",\"modulation\":\"" + receivedKey.modulation + "\"" +
+                               ",\"timestamp\":" + String(receivedKey.timestamp) +
+                               ",\"hash\":" + String(receivedKey.hash) + "}";
+          sendWebSocketEvent("key_received", learnEvent.c_str());
         } else {
           Serial.println("[CC1101] ⚠️ Ключ уже существует в режиме обучения");
           systemState.learningMode = false;
           saveSystemState();
-          sendLog("⚠️ Ключ уже существует: 0x" + String(receivedKey.code, HEX), "warning");
+          sendLog("⚠️ Ключ уже существует: " + existingKey->name, "warning");
+          String learnEvent = "{\"code\":" + String(receivedKey.code) +
+                               ",\"rawData\":\"" + receivedKey.rawData + "\"" +
+                               ",\"bitString\":\"" + receivedKey.bitString + "\"" +
+                               ",\"bitLength\":" + String(receivedKey.bitLength) +
+                               ",\"rssi\":" + String(receivedKey.rssi) +
+                               ",\"snr\":" + String(receivedKey.snr) +
+                               ",\"frequency\":" + String(CC1101Manager::getFrequency()) +
+                               ",\"protocol\":\"" + receivedKey.protocol + "\"" +
+                               ",\"modulation\":\"" + receivedKey.modulation + "\"" +
+                               ",\"timestamp\":" + String(receivedKey.timestamp) +
+                               ",\"hash\":" + String(receivedKey.hash) + "}";
+          sendWebSocketEvent("key_received", learnEvent.c_str());
         }
       } else {
-        Serial.println("[CC1101] Обычный режим - проверяем активность ключа");
-        // Обычный режим - проверяем активность ключа
+        bool gateTriggered = false;
+        bool hasSerialMessage = false;
+        String serialMessage;
+        bool hasLogMessage = false;
+        String logMessage;
+        const char* logType = nullptr;
+        bool sendEventToUI = true;
+
         if (keyExists && existingKey != nullptr) {
-          if (existingKey->enabled) {
-            Serial.println("[CC1101] ✅ Активация ворот ключом: " + existingKey->name);
-            sendLog("🚪 Ворота активированы ключом: " + existingKey->name, "success");
-            GateControl::triggerGatePulse();
+          if (verifyKeySignal(receivedKey, receivedKey.bitString, receivedKey.bitLength, receivedKey.te, systemState.learningMode)) {
+            if (existingKey->enabled) {
+              gateTriggered = true;
+              serialMessage = "[CC1101] ✅ Активация ворот ключом: " + existingKey->name +
+                              " (RSSI: " + String(receivedKey.rssi) + " dBm, " + receivedKey.protocol + ")";
+              hasSerialMessage = true;
+              logMessage = "🚪 Ворота активированы: " + existingKey->name;
+              logType = "success";
+              hasLogMessage = true;
+              GateControl::triggerGatePulse();
+            } else {
+              serialMessage = "[CC1101] ⚠️ Ключ отключен: " + existingKey->name;
+              hasSerialMessage = true;
+              logMessage = "⚠️ Ключ отключен: " + existingKey->name;
+              logType = "warning";
+              hasLogMessage = true;
+            }
           } else {
-            Serial.println("[CC1101] ⚠️ Ключ отключен: " + existingKey->name);
-            sendLog("⚠️ Ключ отключен: " + existingKey->name, "warning");
+            serialMessage = "[CC1101] 🔍 Ожидание подтверждения: " + existingKey->name +
+                            " (RSSI: " + String(receivedKey.rssi) + " dBm)";
+            hasSerialMessage = true;
           }
         } else {
-          Serial.println("[CC1101] ❓ Ключ не найден в базе данных");
-          sendLog("❓ Неизвестный ключ: 0x" + String(receivedKey.code, HEX), "warning");
+          serialMessage = "[CC1101] ❓ Неизвестный ключ: " + receivedKey.protocol +
+                          " 0x" + String(receivedKey.code, HEX) +
+                          " (RSSI: " + String(receivedKey.rssi) + " dBm)";
+          hasSerialMessage = true;
+          logMessage = "❓ Неизвестный ключ: " + receivedKey.protocol + " 0x" + String(receivedKey.code, HEX);
+          logType = "warning";
+          hasLogMessage = true;
+        }
+
+        bool suppressDuplicate = isDuplicateForDisplay(receivedKey);
+        if (gateTriggered) {
+          suppressDuplicate = false;
+        }
+
+        if (suppressDuplicate) {
+          Serial.printf("[CC1101] 🔁 Дубликат сигнала: %s 0x%X (подавлен)\n",
+                        receivedKey.protocol.c_str(), receivedKey.code);
+          sendEventToUI = false;
+          hasSerialMessage = false;
+          hasLogMessage = false;
+        }
+
+        if (hasSerialMessage) {
+          Serial.println(serialMessage);
+        }
+
+        if (hasLogMessage && logType != nullptr) {
+          sendLog(logMessage, logType);
+        }
+
+        if (!suppressDuplicate && sendEventToUI) {
+          String keyData = "{\"code\":" + String(receivedKey.code) + 
+                           ",\"rawData\":\"" + receivedKey.rawData + "\"" +
+                           ",\"bitString\":\"" + receivedKey.bitString + "\"" +
+                           ",\"bitLength\":" + String(receivedKey.bitLength) +
+                           ",\"rssi\":" + String(receivedKey.rssi) +
+                           ",\"snr\":" + String(receivedKey.snr) +
+                           ",\"frequency\":" + String(CC1101Manager::getFrequency()) +
+                           ",\"protocol\":\"" + receivedKey.protocol + "\"" +
+                           ",\"modulation\":\"" + receivedKey.modulation + "\"" +
+                           ",\"timestamp\":" + String(receivedKey.timestamp) +
+                           ",\"hash\":" + String(receivedKey.hash) + "}";
+          sendWebSocketEvent("key_received", keyData.c_str());
         }
       }
-      
-      // Отправляем событие в React через WebSocket
-      String keyData = "{\"code\":" + String(receivedKey.code) + 
-                       ",\"rawData\":\"" + receivedKey.rawData + "\"" +
-                       ",\"rssi\":" + String(receivedKey.rssi) +
-                       ",\"snr\":" + String(receivedKey.snr) +
-                       ",\"frequency\":" + String(CC1101Manager::getFrequency()) +
-                       ",\"protocol\":\"" + receivedKey.protocol + "\"" +
-                       ",\"modulation\":\"" + receivedKey.modulation + "\"" +
-                       ",\"timestamp\":" + String(receivedKey.timestamp) + "}";
-      sendWebSocketEvent("key_received", keyData.c_str());
     }
     
     CC1101Manager::resetReceived();

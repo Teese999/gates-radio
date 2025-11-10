@@ -16,7 +16,11 @@ enum ModulationType {
 // Структура для хранения принятого ключа
 struct ReceivedKey {
     bool available;
-    String rawData;
+    String rawData;           // RAW данные (для отображения)
+    String bitString;        // Битовые строки (01010101...) для точного сравнения
+    int bitLength;           // Количество бит
+    float te;                // Базовый период (Time Element) в мкс
+    uint32_t hash;           // Хеш сигнала (для устранения дубликатов)
     uint32_t code;
     int rssi;
     float snr;

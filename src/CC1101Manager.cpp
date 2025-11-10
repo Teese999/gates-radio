@@ -21,7 +21,7 @@ namespace {
 
 // Статические переменные
 CC1101* CC1101Manager::radio = nullptr;
-float CC1101Manager::currentFrequency = 434.42;
+float CC1101Manager::currentFrequency = 433.92; // Фиксированная частота для fixed scan
 ModulationType CC1101Manager::currentModulation = MODULATION_ASK_OOK;
 volatile bool CC1101Manager::receivedFlag = false;
 ReceivedKey CC1101Manager::lastKey;
@@ -285,7 +285,7 @@ bool CC1101Manager::analyzePulsePattern(int pulseCount, float& estimatedTe) {
 }
 
 CC1101Manager::DecodedResult CC1101Manager::tryDecodeKnownProtocols(const PulsePattern* pulses, int length) {
-    DecodedResult result {false, 0, 0, "", ""};
+    DecodedResult bestResult {false, 0, 0, "", ""};
     
     // Определяем базовый период (TE) из сигнала (как в Flipper Zero)
     // Используем функцию findBestTE для более точного определения
@@ -303,14 +303,19 @@ CC1101Manager::DecodedResult CC1101Manager::tryDecodeKnownProtocols(const PulseP
     }
     
     // Алгоритм автоопределения протокола (как в Flipper Zero "read fixed scan")
-    // 1. Пробуем все протоколы из списка Flipper Zero
+    // 1. Пробуем ВСЕ протоколы из списка Flipper Zero
     // 2. Для каждого протокола тестируем разные варианты кодирования (инверсия, соотношения)
     // 3. Автоматически определяем оптимальный TE из сигнала
-    // 4. Выбираем лучший результат по качеству декодирования (приоритет полному декодированию)
+    // 4. Выбираем ЛУЧШИЙ результат по качеству декодирования (приоритет полному декодированию)
     // 5. Поддерживаем манчестерское кодирование для специальных протоколов (Somfy и др.)
+    // 6. Не возвращаемся сразу после первого успешного - пробуем все протоколы и выбираем лучший
     
     // Используем протоколы из SubGhzProtocols (адаптированные из Flipper Zero)
     // Пробуем каждый протокол с разными вариантами кодирования
+    
+    int bestBits = 0;
+    float bestQuality = 0.0f;
+    bool hasFullDecode = false;
     
     // Проходим по всем протоколам из Flipper Zero
     for (int protoIdx = 0; protoIdx < PROTOCOL_COUNT; protoIdx++) {
@@ -348,34 +353,84 @@ CC1101Manager::DecodedResult CC1101Manager::tryDecodeKnownProtocols(const PulseP
             const auto& variant = variants[v];
             float baseDelay = (proto->te > 0) ? proto->te : estimatedTe;
             
+            DecodedResult candidate {false, 0, 0, "", ""};
             if (decodeProtocolRCSwitch(pulses, length, baseDelay, variant.highRatio, variant.lowRatio,
-                                       variant.inverted, proto->bitCount, proto->name, proto, result)) {
-                return result;
+                                       variant.inverted, proto->bitCount, proto->name, proto, candidate)) {
+                // Оцениваем качество декодирования
+                bool isFullDecode = (candidate.bitLength == proto->bitCount);
+                float quality = static_cast<float>(candidate.bitLength) / proto->bitCount;
+                
+                // Приоритет полному декодированию
+                bool isBetter = false;
+                
+                if (isFullDecode && !hasFullDecode) {
+                    // Первое полное декодирование - лучший вариант
+                    isBetter = true;
+                    hasFullDecode = true;
+                } else if (isFullDecode && hasFullDecode) {
+                    // Оба полные - выбираем с большим количеством бит или лучшим качеством
+                    if (candidate.bitLength > bestBits || 
+                        (candidate.bitLength == bestBits && quality > bestQuality)) {
+                        isBetter = true;
+                    }
+                } else if (!isFullDecode && !hasFullDecode) {
+                    // Оба неполные - выбираем лучшее качество или больше бит
+                    if (quality > bestQuality || 
+                        (quality == bestQuality && candidate.bitLength > bestBits)) {
+                        isBetter = true;
+                    }
+                }
+                
+                if (isBetter) {
+                    bestResult = candidate;
+                    bestBits = candidate.bitLength;
+                    bestQuality = quality;
+                }
             }
         }
     }
     
-    // Дополнительные варианты для совместимости (старая логика)
-    struct FallbackConfig {
-        float highRatio;
-        float lowRatio;
-        bool inverted;
-        int bitCount;
-        const char* name;
-    } fallbacks[] = {
-        {1.0f, 5.0f, false, 24, "Custom 1:5"},
-        {5.0f, 1.0f, false, 24, "Custom 5:1"},
-    };
-    
-    for (const auto& cfg : fallbacks) {
-        // Для fallback протоколов передаем nullptr, так как их нет в списке протоколов
-        if (decodeProtocolRCSwitch(pulses, length, estimatedTe, cfg.highRatio, cfg.lowRatio,
-                                   cfg.inverted, cfg.bitCount, cfg.name, nullptr, result)) {
-            return result;
+    // Дополнительные варианты для совместимости (fallback протоколы)
+    // Пробуем их только если не нашли лучший результат выше
+    if (!bestResult.success || bestQuality < 0.85f) {
+        struct FallbackConfig {
+            float highRatio;
+            float lowRatio;
+            bool inverted;
+            int bitCount;
+            const char* name;
+        } fallbacks[] = {
+            {1.0f, 5.0f, false, 24, "Custom 1:5"},
+            {5.0f, 1.0f, false, 24, "Custom 5:1"},
+        };
+        
+        for (const auto& cfg : fallbacks) {
+            DecodedResult candidate {false, 0, 0, "", ""};
+            if (decodeProtocolRCSwitch(pulses, length, estimatedTe, cfg.highRatio, cfg.lowRatio,
+                                       cfg.inverted, cfg.bitCount, cfg.name, nullptr, candidate)) {
+                float quality = static_cast<float>(candidate.bitLength) / cfg.bitCount;
+                bool isFullDecode = (candidate.bitLength == cfg.bitCount);
+                
+                bool isBetter = false;
+                if (isFullDecode && !hasFullDecode) {
+                    isBetter = true;
+                    hasFullDecode = true;
+                } else if (isFullDecode && hasFullDecode && candidate.bitLength > bestBits) {
+                    isBetter = true;
+                } else if (!isFullDecode && !hasFullDecode && quality > bestQuality) {
+                    isBetter = true;
+                }
+                
+                if (isBetter) {
+                    bestResult = candidate;
+                    bestBits = candidate.bitLength;
+                    bestQuality = quality;
+                }
+            }
         }
     }
     
-    return result;
+    return bestResult;
 }
 
 // Вспомогательная функция для получения ожидаемого количества бит для протокола
@@ -501,6 +556,11 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
         // Holtek обычно 300-400 мкс
         minTE = 250.0f;
         maxTE = 500.0f;
+    } else if (strcmp(protocolName, "Keeloq") == 0) {
+        // Keeloq может использовать широкий диапазон TE: 400-900 мкс (в зависимости от производителя)
+        // Некоторые варианты используют 650-750 мкс (как в вашем случае: 752 мкс)
+        minTE = 300.0f;
+        maxTE = 1000.0f; // Широкий диапазон для различных вариантов Keeloq
     } else {
         // Для остальных протоколов используем широкий диапазон, но разумный
         minTE = 150.0f;
@@ -640,7 +700,11 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
             // Для всех протоколов применяем универсальную логику определения качества
             // Приоритет отдаем полному декодированию, но принимаем и частичное с высоким процентом
             float minBitsRatio;
-            if (bitCount >= 50) {
+            if (bitCount >= 64) {
+                // Для очень длинных протоколов (64+ бит, например Keeloq) снижаем требования до минимума
+                // Keeloq может передаваться с разной длиной и вариациями, поэтому принимаем частичное декодирование
+                minBitsRatio = 0.65f; // Принимаем 65% бит для Keeloq
+            } else if (bitCount >= 50) {
                 // Для длинных протоколов (56+ бит) снижаем требования
                 minBitsRatio = 0.75f;
             } else if (bitCount >= 32) {
@@ -655,9 +719,20 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
             // Дополнительная проверка: отбрасываем подозрительные коды прямо здесь
             // Коды со всеми единицами для данного количества бит
             // Применяется ко всем протоколам одинаково
-            uint32_t maxCodeForBits = (bitCount <= 24) ? 0xFFFFFF : 0xFFFFFFFF;
-            if (testCode == 0 || testCode == maxCodeForBits || testCode == 0xFFFFFFFF) {
-                continue; // Пропускаем этот вариант
+            // Для длинных протоколов (64+ бит) проверка работает только с младшими 32 битами
+            if (bitCount <= 32) {
+                uint32_t maxCodeForBits = (bitCount <= 24) ? 0xFFFFFF : 0xFFFFFFFF;
+                if (testCode == 0 || testCode == maxCodeForBits || testCode == 0xFFFFFFFF) {
+                    continue; // Пропускаем этот вариант
+                }
+            } else {
+                // Для 64-битных протоколов проверяем только младшие 32 бита
+                // Полный код может содержать любые значения, поэтому проверяем только явные ошибки
+                if (testCode == 0 || testCode == 0xFFFFFFFF) {
+                    // Пропускаем только явно невалидные значения
+                    // Для Keeloq код может быть любым (криптографически зашифрованным)
+                    continue;
+                }
             }
             
             // Проверка TE применяется через ограничения minTE/maxTE выше
@@ -668,8 +743,10 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
             if (bits >= bitCount * minBitsRatio && testCode != 0) {
                 // Дополнительная проверка: если декодировано меньше бит, чем требуется,
                 // но это неполное декодирование - требуем более высокий процент успешных бит
-                if (bits < bitCount && bits < bitCount * 0.9f) {
-                    // Для неполного декодирования требуем минимум 90% успешных бит
+                // Для длинных протоколов (64+ бит) снижаем требования
+                float minPartialRatio = (bitCount >= 64) ? 0.70f : 0.90f;
+                if (bits < bitCount && bits < bitCount * minPartialRatio) {
+                    // Для неполного декодирования требуем минимум процента успешных бит
                     continue; // Пропускаем низкокачественные варианты
                 }
                 // Для всех протоколов приоритет отдаем полному декодированию
@@ -724,12 +801,6 @@ bool CC1101Manager::decodeProtocolRCSwitch(const PulsePattern* pulses, int lengt
                            (bitCount >= 32) ? (int)(bitCount * 0.75f) : 
                            (int)(bitCount * 0.8f);
         
-        if (bestResult.bitLength >= minBitsForLog) {
-            Serial.printf("[%s] Декодировано: skip=%d, TE=%.1f, bits=%d/%d, code=%lu (0x%lX)\n", 
-                         protocolName, bestSkip, bestTE, bestResult.bitLength, bitCount, 
-                         bestResult.code, bestResult.code);
-        }
-        
         return true;
     }
     
@@ -758,7 +829,7 @@ bool CC1101Manager::decodeWithProtocols(int pulseCount, float te, uint32_t& code
     if (res.success) {
         codeOut = res.code;
         protocolName = res.protocol;
-        bitStringOut = res.bitString;
+        bitStringOut = res.bitString; // Битовые строки (01010101...)
         return true;
     }
     
@@ -1122,6 +1193,49 @@ bool CC1101Manager::checkReceived() {
     lastKey.rawData = bitSequence;
     lastKey.protocol = protocolName;
     lastKey.modulation = "ASK/OOK";
+    lastKey.hash = currentHash;
+    
+    // Извлекаем битовую строку из decoded результата
+    // Для декодированных протоколов bitSequence содержит битовую строку (0101...)
+    // Для RAW протоколов содержит тайминги (939L 869H ...)
+    if (decoded && protocolName != "RAW/Unknown") {
+        // bitSequence уже содержит битовую строку из decodeWithProtocols
+        // Проверяем, что это действительно битовая строка (только 0 и 1)
+        bool isBitString = true;
+        int bitCount = 0;
+        for (int i = 0; i < bitSequence.length(); i++) {
+            char c = bitSequence[i];
+            if (c == '0' || c == '1') {
+                bitCount++;
+            } else if (c != ' ' && c != '\n' && c != '\r') {
+                // Если есть другие символы (например, L, H для RAW) - это не битовая строка
+                isBitString = false;
+                break;
+            }
+        }
+        
+        if (isBitString && bitCount > 0) {
+            // Это битовая строка - сохраняем без пробелов
+            lastKey.bitString = "";
+            lastKey.bitString.reserve(bitCount);
+            for (int i = 0; i < bitSequence.length(); i++) {
+                char c = bitSequence[i];
+                if (c == '0' || c == '1') {
+                    lastKey.bitString += c;
+                }
+            }
+            lastKey.bitLength = bitCount;
+        } else {
+            // Это RAW данные, битовая строка недоступна
+            lastKey.bitString = "";
+            lastKey.bitLength = 0;
+        }
+    } else {
+        // Для RAW сигналов битовая строка пустая
+        lastKey.bitString = "";
+        lastKey.bitLength = 0;
+    }
+    lastKey.te = estimatedTe;
     
     // Компактный однострочный вывод информации о ключе
     String hexCode = String(lastKey.code, HEX);
@@ -1146,9 +1260,17 @@ bool CC1101Manager::checkReceived() {
     }
     
     // Для длинных протоколов показываем дополнительную информацию
-    if (bitSequence.length() >= 50) {
-        Serial.printf("[CC1101] 🔑 Ключ: %s (56-bit) | Код: %lu (0x%s) | Битовая строка: %s | RSSI: %d dBm | TE: %.0f мкс | Частота: %.2f МГц\n",
+    if (protocolName == "Keeloq" || protocolName == "Keeloq64") {
+        // Keeloq - 64-битный протокол
+        String bitDisplay = bitSequence.length() > 70 ? (bitSequence.substring(0, 70) + "...") : bitSequence;
+        Serial.printf("[CC1101] 🔑 Ключ: %s (64-bit) | Код: %lu (0x%s) | Битовая строка: %s | RSSI: %d dBm | TE: %.0f мкс | Частота: %.2f МГц\n",
                       lastKey.protocol.c_str(), lastKey.code, hexCode.c_str(), 
+                      bitDisplay.c_str(),
+                      lastKey.rssi, estimatedTe, currentFrequency);
+    } else if (bitSequence.length() >= 50) {
+        // Другие длинные протоколы (56-bit и т.д.)
+        Serial.printf("[CC1101] 🔑 Ключ: %s (%d-bit) | Код: %lu (0x%s) | Битовая строка: %s | RSSI: %d dBm | TE: %.0f мкс | Частота: %.2f МГц\n",
+                      lastKey.protocol.c_str(), bitSequence.length(), lastKey.code, hexCode.c_str(), 
                       bitSequence.length() > 60 ? (bitSequence.substring(0, 60) + "...").c_str() : bitSequence.c_str(),
                       lastKey.rssi, estimatedTe, currentFrequency);
     } else {
@@ -1172,6 +1294,10 @@ void CC1101Manager::resetReceived() {
     lastKey.available = false;
     lastKey.code = 0;
     lastKey.rawData = "";
+    lastKey.bitString = "";
+    lastKey.bitLength = 0;
+    lastKey.te = 0.0f;
+    lastKey.hash = 0;
     receivedFlag = false;
     rawSignalReady = false;
     rawSignalIndex = 0;
@@ -1273,6 +1399,17 @@ bool CC1101Manager::init(int csPin, int gdo0Pin, int gdo2Pin) {
     }
     Serial.println("[CC1101] ✅ Инициализация успешна!");
 
+    // ============================================
+    // FIXED SCAN MODE (как в Flipper Zero)
+    // ============================================
+    // Режим фиксированного сканирования:
+    // - Фиксированная частота: 433.92 МГц (установлена выше)
+    // - Фиксированная модуляция: AM650 (ASK/OOK)
+    // - Автоматическое определение протокола из RAW данных
+    // - Проверка всех известных протоколов в порядке приоритета
+    // - Автоматическое определение TE из сигнала
+    // ============================================
+    
     // Настройка модуляции AM650 (как в Flipper Zero)
     state = cc->setOOK(true);
     if (state != RADIOLIB_ERR_NONE) {
@@ -1297,6 +1434,8 @@ bool CC1101Manager::init(int csPin, int gdo0Pin, int gdo2Pin) {
     if (state == RADIOLIB_ERR_NONE) {
         Serial.println("[CC1101] Девиация частоты: 5.2 кГц (AM650)");
     }
+    
+    Serial.println("[CC1101] ✅ Fixed Scan Mode: 433.92 МГц, AM650");
     
     // Дополнительные настройки для лучшей фильтрации шумов
     // Увеличиваем порог RSSI для более строгой фильтрации

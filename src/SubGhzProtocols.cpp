@@ -419,13 +419,14 @@ const SubGhzProtocolConfig PROTOCOL_KIA_HYUNDAI = {
     0.0f                 // preambleRatio
 };
 
-// Keeloq (64-bit) - криптографический протокол (базовая поддержка декодирования структуры)
-// TE: обычно ~400-500 мкс, соотношение 1:3
-// Примечание: KEELOQ требует криптографического декодирования, здесь только структура
+// Keeloq (64-bit) - криптографический протокол
+// TE: обычно ~400-800 мкс (может варьироваться), соотношение 1:3
+// Структура: 32 бита данных + 32 бита кода (криптографически зашифрованного)
+// Для декодирования структуры достаточно распознать 64 бита без расшифровки
 const SubGhzProtocolConfig PROTOCOL_KEELOQ = {
     "Keeloq",            // name
     64,                  // bitCount
-    400.0f,             // te
+    400.0f,             // te (базовое значение, будет автоматически определено)
     1.0f,                // highRatio
     3.0f,                // lowRatio
     false,               // inverted
@@ -739,29 +740,33 @@ const SubGhzProtocolConfig PROTOCOL_MARANTEC_32BIT = {
     0.0f                 // preambleRatio
 };
 
-// Массив всех протоколов (в порядке приоритета - популярные первыми)
-// Порядок: сначала протоколы для ворот, затем популярные протоколы, затем остальные
+// Массив всех протоколов в порядке приоритета как во Flipper Zero
+// Порядок основан на официальной прошивке Flipper Zero для fixed scan
 const SubGhzProtocolConfig* ALL_PROTOCOLS[] = {
-    // CAME - приоритет для ворот (работает отлично!)
+    // 1. Простые популярные протоколы (проверяются первыми - быстрые и надежные)
     &PROTOCOL_CAME_24BIT,
     &PROTOCOL_CAME_12BIT,
-    
-    // Nice протоколы - очень популярны для ворот
-    &PROTOCOL_NICE_FLORS_24BIT,
-    &PROTOCOL_NICE_FLORS_12BIT,
+    &PROTOCOL_PRINCETON,
     &PROTOCOL_NICE_FLO_24BIT,
     &PROTOCOL_NICE_FLO_12BIT,
-    
-    // Nero протоколы
-    &PROTOCOL_NERO_RADIO,    // 56-bit
-    &PROTOCOL_NERO_SKETCH,   // 24-bit
-    
-    // Princeton и варианты
-    &PROTOCOL_PRINCETON,
+    &PROTOCOL_NICE_FLORS_24BIT,
+    &PROTOCOL_NICE_FLORS_12BIT,
     &PROTOCOL_BYTEC,
     &PROTOCOL_GATE_TX,
     
-    // Популярные протоколы для ворот и шлагбаумов
+    // 2. Популярные протоколы общего назначения
+    &PROTOCOL_EV1527,
+    &PROTOCOL_PT2262,        // Основной вариант 1:3
+    &PROTOCOL_PT2262_1_2,    // Вариант 1:2
+    &PROTOCOL_PT2262_1_1,    // Вариант 1:1
+    &PROTOCOL_HX2262,
+    &PROTOCOL_ROGER,
+    &PROTOCOL_HOLTEK_24BIT,
+    &PROTOCOL_HOLTEK_12BIT,
+    &PROTOCOL_LINEAR,
+    &PROTOCOL_BETT,
+    
+    // 3. Протоколы для ворот и шлагбаумов
     &PROTOCOL_MARANTEC,
     &PROTOCOL_MARANTEC_32BIT,
     &PROTOCOL_FAAC_SLH,
@@ -777,44 +782,36 @@ const SubGhzProtocolConfig* ALL_PROTOCOLS[] = {
     &PROTOCOL_MAESTRO,
     &PROTOCOL_CHAMBERLAIN,
     
-    // Протоколы с манчестерским кодированием (Somfy)
-    &PROTOCOL_SOMFY,
+    // 4. Nero протоколы
+    &PROTOCOL_NERO_SKETCH,   // 24-bit
+    &PROTOCOL_NERO_RADIO,    // 56-bit
     
-    // Популярные протоколы общего назначения
-    &PROTOCOL_EV1527,
-    &PROTOCOL_PT2262,        // Основной вариант 1:3
-    &PROTOCOL_PT2262_1_2,    // Вариант 1:2
-    &PROTOCOL_PT2262_1_1,    // Вариант 1:1
-    &PROTOCOL_HX2262,
-    &PROTOCOL_ROGER,
-    &PROTOCOL_HOLTEK_24BIT,
-    &PROTOCOL_HOLTEK_12BIT,
-    
-    // Протоколы для умного дома
+    // 5. Протоколы для умного дома
     &PROTOCOL_X10,
     &PROTOCOL_HOMEEASY,
     &PROTOCOL_INTERTECHNO,
     &PROTOCOL_ELRO,
+    &PROTOCOL_LINEAR_40BIT,
     
-    // Протоколы безопасности
+    // 6. Протоколы безопасности
     &PROTOCOL_SECURITY_PLUS,
     &PROTOCOL_SECURITY_PLUS_2,
     &PROTOCOL_YALE,
     &PROTOCOL_HID,
     
-    // Автомобильные протоколы
+    // 7. Автомобильные протоколы
     &PROTOCOL_STAR_LINE,
     &PROTOCOL_KIA_HYUNDAI,
     &PROTOCOL_KIA_HYUNDAI_32BIT,
     
-    // Другие протоколы
-    &PROTOCOL_LINEAR,
-    &PROTOCOL_LINEAR_40BIT,
-    &PROTOCOL_BETT,
+    // 8. Специальные протоколы с манчестерским кодированием
+    &PROTOCOL_SOMFY,
+    
+    // 9. Другие протоколы
     &PROTOCOL_OREGON,
     
-    // Длинные протоколы (в конце, так как требуют больше времени на декодирование)
-    &PROTOCOL_KEELOQ,        // 64-bit (криптографический, только структура)
+    // 10. Длинные протоколы (в конце, так как требуют больше времени на декодирование)
+    &PROTOCOL_KEELOQ,        // 64-bit (криптографический, распознавание структуры)
     
     nullptr  // Маркер конца
 };
