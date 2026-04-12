@@ -1409,11 +1409,18 @@ bool CC1101Manager::init(int csPin, int gdo0Pin, int gdo2Pin) {
     // RadioLib API — проверенная рабочая конфигурация
     // При BW=58kHz данные имеют правильную OOK структуру:
     // 340H 1667L 230H 753L — чередование разных длительностей
-    state = cc->setBitRate(3.79);
-    Serial.println("[CC1101] Битрейт: 3.79 kbps");
+    // Bitrate: 10kbps — период бита 100мкс
+    // При 3.79kbps (264мкс) Nero Radio TE=200мкс не различим
+    // При 10kbps (100мкс) — все протоколы от TE=200мкс работают
+    // Bitrate: 20kbps — период бита 50мкс
+    // Nero Radio TE=200мкс = 4 бита — достаточно для различения
+    // CAME TE=320мкс = 6.4 бита — отлично
+    state = cc->setBitRate(20.0);
+    Serial.println("[CC1101] Битрейт: 20 kbps (период бита: 50 мкс)");
 
-    state = cc->setRxBandwidth(58.0);
-    Serial.println("[CC1101] BW: 58 кГц");
+    // BW=135kHz — компромисс: CAME (58kHz достаточно) + Nero Radio (нужен > 100kHz)
+    state = cc->setRxBandwidth(135.0);
+    Serial.println("[CC1101] BW: 135 кГц");
 
     state = cc->setFrequencyDeviation(5.2);
     Serial.println("[CC1101] Девиация: 5.2 кГц");
