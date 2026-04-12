@@ -50,18 +50,17 @@ public:
     }
 };
 
-// Holtek HT12x (12 bit) — from Unleashed firmware
-// TE: 500/1000, delta: 200
-// Preamble: LOW ~ 36*TE_S = 18000us
+// Holtek (40 bit) — from Unleashed: TE: 430/870, delta: 100
+// Preamble: LOW ~ 36*TE_S = 15480us
 class ProtoHoltek : public SubGhzDecoderBase {
     enum { Reset, FoundStart, SaveDur, CheckDur } state = Reset;
     uint64_t data = 0;
     int bits = 0;
     unsigned long savedDur = 0;
 
-    static constexpr unsigned long TE_S = 500;
-    static constexpr unsigned long TE_L = 1000;
-    static constexpr unsigned long TE_D = 200;
+    static constexpr unsigned long TE_S = 430;
+    static constexpr unsigned long TE_L = 870;
+    static constexpr unsigned long TE_D = 100;
 
 public:
     void reset() override { state = Reset; data = 0; bits = 0; clearResult(); }
@@ -89,8 +88,8 @@ public:
                     data = (data << 1); bits++; state = SaveDur;
                 } else if (durationCheck(savedDur, TE_L, TE_D) && durationCheck(duration, TE_S, TE_D)) {
                     data = (data << 1) | 1; bits++; state = SaveDur;
-                } else if (duration >= TE_S * 4) {
-                    if (bits >= 12) emitResult(data, bits, TE_S, "Holtek");
+                } else if (duration > TE_S * 10 + TE_D) {
+                    if (bits >= 40) emitResult(data, bits, TE_S, "Holtek");
                     state = Reset;
                 } else state = Reset;
             } else state = Reset;

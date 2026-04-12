@@ -15,6 +15,7 @@
 #include "protocols/ProtoGateTx.h"
 #include "protocols/ProtoStarLine.h"
 #include "protocols/ProtoBatch2.h"
+#include "protocols/ProtoBatch3.h"
 
 // Generic OOK fallback — catches any 1:2..1:4 ratio signal
 class ProtoGenericOOK : public SubGhzDecoderBase {
@@ -51,10 +52,11 @@ public:
 // Main multi-decoder: 30 protocols + GenericOOK fallback
 // ============================================================================
 class SubGhzMultiDecoder {
-    static constexpr int MAX = 36;
+    static constexpr int MAX = 48;
     SubGhzMultiDecoderT<MAX> decoder;
 
-    // All protocol instances (stack allocated)
+    // All protocol instances (stack allocated — no heap)
+    // Batch 1: Core protocols
     ProtoCAME came;
     ProtoCameTwee cameTwee;
     ProtoCameAtomo cameAtomo;
@@ -75,6 +77,7 @@ class SubGhzMultiDecoder {
     ProtoBftMitto bftMitto;
     ProtoDooya dooya;
     ProtoMarantec marantec;
+    // Batch 2
     ProtoClemsa clemsa;
     ProtoDoitrand doitrand;
     ProtoPhoenixV2 phoenixV2;
@@ -85,11 +88,22 @@ class SubGhzMultiDecoder {
     ProtoSMC5326 smc5326;
     ProtoHoneywell honeywell;
     ProtoAlutechAt4n alutechAt4n;
+    // Batch 3
+    ProtoHoltekHT12X holtekHT12X;
+    ProtoLinearDelta3 linearDelta3;
+    ProtoHoneywellWDB honeywellWDB;
+    ProtoSecPlusV2 secPlusV2;
+    ProtoMegacode megacode;
+    ProtoIDo ido;
+    ProtoMastercode mastercode;
+    ProtoPowerSmart powerSmart;
+    ProtoSomfyKeytis somfyKeytis;
+    // Fallback
     ProtoGenericOOK genericOok;
 
 public:
     SubGhzMultiDecoder() {
-        // Specific preamble decoders first (sorted by preamble uniqueness)
+        // Preamble-based decoders first, sorted by uniqueness
         decoder.add(&came);
         decoder.add(&cameTwee);
         decoder.add(&cameAtomo);
@@ -105,7 +119,10 @@ public:
         decoder.add(&kingGates);
         decoder.add(&magellan);
         decoder.add(&honeywell);
+        decoder.add(&honeywellWDB);
         decoder.add(&somfyTelis);
+        decoder.add(&somfyKeytis);
+        decoder.add(&secPlusV2);
         decoder.add(&hormann);
         decoder.add(&chamberlain);
         decoder.add(&dooya);
@@ -113,9 +130,15 @@ public:
         decoder.add(&doitrand);
         decoder.add(&clemsa);
         decoder.add(&marantec);
+        decoder.add(&megacode);
+        decoder.add(&ido);
+        decoder.add(&mastercode);
+        decoder.add(&powerSmart);
         decoder.add(&legrand);
         decoder.add(&ansonic);
         decoder.add(&smc5326);
+        decoder.add(&holtekHT12X);
+        decoder.add(&linearDelta3);
         decoder.add(&princeton);
         decoder.add(&gateTx);
         decoder.add(&holtek);
