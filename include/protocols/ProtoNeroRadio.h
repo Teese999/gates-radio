@@ -11,9 +11,10 @@ class ProtoNeroRadio : public SubGhzDecoderBase {
     int headerCount = 0;
     unsigned long savedDur = 0;
 
-    static constexpr unsigned long TE_S = 200;
-    static constexpr unsigned long TE_L = 400;
-    static constexpr unsigned long TE_D = 80;
+    // Real signal has TE ~230-330 for short, ~430-760 for long
+    static constexpr unsigned long TE_S = 250;
+    static constexpr unsigned long TE_L = 500;
+    static constexpr unsigned long TE_D = 150; // Wide tolerance for real signals
 
 public:
     void reset() override { state = Reset; data = 0; bits = 0; headerCount = 0; clearResult(); }
@@ -23,15 +24,20 @@ public:
     void feed(bool level, unsigned long duration) override {
         switch (state) {
         case Reset:
-            if (level && durationCheck(duration, TE_S, TE_D)) {
+            // Any short pulse (H or L) could start preamble
+            if (durationCheck(duration, TE_S, TE_D)) {
                 headerCount = 1; state = CheckPreamble;
             }
             break;
         case CheckPreamble:
             if (durationCheck(duration, TE_S, TE_D)) {
                 headerCount++;
-            } else if (level && DURATION_DIFF(duration, TE_S * 4) < TE_D * 2 && headerCount > 40) {
+            }
+            // Start bit: longer pulse ~3-4*TE_S after enough preamble pulses
+            else if (duration > TE_S * 2 && duration < TE_S * 6 && headerCount > 10) {
                 data = 0; bits = 0; state = SaveDur;
+            } else if (headerCount < 10) {
+                state = Reset; // Not enough preamble
             } else state = Reset;
             break;
         case SaveDur:
