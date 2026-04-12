@@ -10,6 +10,7 @@ public:
     using CC1101::CC1101;
     int16_t writeReg(uint8_t reg, uint8_t value) { return SPIsetRegValue(reg, value); }
     void writeRegDirect(uint8_t reg, uint8_t data) { SPIwriteRegister(reg, data); }
+    uint8_t getRegValue(uint8_t reg) { return SPIreadRegister(reg); }
 };
 
 // Глобальный мультидекодер (Flipper Zero architecture)
@@ -17,7 +18,7 @@ static SubGhzMultiDecoder multiDecoder;
 
 // Ring buffer for ISR -> main loop pulse streaming
 // ISR writes pulse data, main loop reads and feeds decoders
-static constexpr int RING_BUF_SIZE = 256;
+static constexpr int RING_BUF_SIZE = 1024;
 static volatile unsigned long ringTimings[RING_BUF_SIZE];
 static volatile bool ringLevels[RING_BUF_SIZE];
 static volatile int ringWriteIdx = 0;
@@ -1466,8 +1467,23 @@ bool CC1101Manager::init(int csPin, int gdo0Pin, int gdo2Pin) {
         Serial.println("[CC1101] ⚠️ Ошибка установки OOK модуляции");
     }
 
-    // === EXACT Flipper Zero OOK650Async register preset ===
+    // Сначала RadioLib настраивает RAW режим (может перезаписать регистры)
+    if (!configureForRawMode()) {
+        Serial.println("[CC1101] ❌ Не удалось настроить RAW режим");
+        return false;
+    }
+
+    // Запускаем приём
+    if (!enterRawReceive()) {
+        Serial.println("[CC1101] ❌ Не удалось запустить приём");
+        return false;
+    }
+
+    // ПОСЛЕ RadioLib: перезаписываем регистры точными значениями Flipper OOK650Async
+    // Это гарантирует что RadioLib не испортит конфигурацию
     CC1101Ex* ccEx = static_cast<CC1101Ex*>(cc);
+    cc->standby(); // Нужно перейти в standby для записи регистров
+
     ccEx->writeRegDirect(0x02, 0x0D); // IOCFG0: Serial data async output
     ccEx->writeRegDirect(0x03, 0x07); // FIFOTHR
     ccEx->writeRegDirect(0x08, 0x32); // PKTCTRL0: async serial mode
@@ -1486,39 +1502,23 @@ bool CC1101Manager::init(int csPin, int gdo0Pin, int gdo2Pin) {
     ccEx->writeRegDirect(0x21, 0x11); // FREND0
     ccEx->writeRegDirect(0x22, 0xB6); // FREND1
 
-    Serial.println("[CC1101] Регистры OOK650Async (точная копия Flipper Zero) установлены");
-    if (state == RADIOLIB_ERR_NONE) {
-        Serial.println("[CC1101] Ширина полосы RX: 58 кГц (AM650)");
-    }
+    // Переводим в RX через strobe command (SRX = 0x34)
+    ccEx->writeRegDirect(0x34, 0x00); // SRX strobe — начать приём
+    delay(1);
+    attachRawInterrupt();
 
-    // Девиация частоты: 5.2 кГц для AM650
-    state = cc->setFrequencyDeviation(5.2);
-    if (state == RADIOLIB_ERR_NONE) {
-        Serial.println("[CC1101] Девиация частоты: 5.2 кГц (AM650)");
+    // Верифицируем
+    Serial.print("[CC1101] Regs after Flipper override: ");
+    uint8_t checkRegs[] = {0x02, 0x10, 0x11, 0x12, 0x1B, 0x1D};
+    const char* checkNames[] = {"IOCFG0","MDMCFG4","MDMCFG3","MDMCFG2","AGCCTRL2","AGCCTRL0"};
+    for (int i = 0; i < 6; i++) {
+        Serial.printf("%s=0x%02X ", checkNames[i], ccEx->getRegValue(checkRegs[i]));
     }
-    
-    Serial.println("[CC1101] ✅ Fixed Scan Mode: 433.92 МГц, AM650");
-    
-    // Дополнительные настройки для лучшей фильтрации шумов
-    // Увеличиваем порог RSSI для более строгой фильтрации
-    // Это делается через установку AGC (Automatic Gain Control)
-
-    state = cc->setOutputPower(10);
-    if (state == RADIOLIB_ERR_NONE) {
-        Serial.println("[CC1101] Выходная мощность: 10 dBm");
-    }
-
-    if (!configureForRawMode()) {
-        Serial.println("[CC1101] ❌ Не удалось настроить RAW режим");
-        return false;
-    }
+    Serial.println();
 
     printConfig();
-    
-    // Сохраняем время инициализации для фильтрации начальных сигналов
     initTime = millis();
-    
-    return enterRawReceive();
+    return true;
 }
 
 bool CC1101Manager::setFrequency(float freq) {

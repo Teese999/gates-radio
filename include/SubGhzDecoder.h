@@ -17,31 +17,67 @@
 #include "protocols/ProtoBatch2.h"
 #include "protocols/ProtoBatch3.h"
 
-// Generic OOK fallback — catches any 1:2..1:4 ratio signal
+// Generic OOK fallback — catches any OOK signal with ratio 2:1..6:1
+// Waits for end-of-packet (gap or ratio break) before emitting
 class ProtoGenericOOK : public SubGhzDecoderBase {
     enum { Reset, SaveDur, CheckDur } state = Reset;
     uint64_t data = 0; int bits = 0; unsigned long savedDur = 0;
+    int consecutiveMiss = 0;
+
+    static constexpr int MIN_BITS = 20; // Don't emit noise
+
+    void tryEmit() {
+        if (bits >= MIN_BITS && data != 0) {
+            const char* proto = "OOK";
+            if (bits >= 52 && bits <= 58) proto = "Nero Radio";
+            else if (bits == 24) proto = "CAME";
+            else if (bits >= 12 && bits <= 13) proto = "CAME 12";
+            else if (bits >= 63 && bits <= 66) proto = "Keeloq";
+            emitResult(data, bits, 0, proto);
+        }
+    }
+
 public:
-    void reset() override { state=Reset; data=0; bits=0; clearResult(); }
+    void reset() override { state=Reset; data=0; bits=0; consecutiveMiss=0; clearResult(); }
     const char* name() const override { return "GenericOOK"; }
     SubGhzDecoderResult getResult() const override { return result; }
     void feed(bool level, unsigned long duration) override {
         switch (state) {
         case Reset:
-            if (level && duration >= 150 && duration <= 2000) { savedDur=duration; state=CheckDur; data=0; bits=0; }
+            if (level && duration >= 100 && duration <= 3000) {
+                savedDur=duration; state=CheckDur; data=0; bits=0; consecutiveMiss=0;
+            }
             break;
         case SaveDur:
-            if (level) { savedDur=duration; state=CheckDur; }
-            else { if (bits>=12) emitResult(data,bits,0,"OOK"); state=Reset; }
+            if (level) { savedDur=duration; state=CheckDur; consecutiveMiss=0; }
+            else {
+                // Two LOWs in a row = end of packet
+                tryEmit();
+                state=Reset;
+            }
             break;
         case CheckDur:
             if (!level) {
                 float ratio = (savedDur>duration) ? (float)savedDur/duration : (float)duration/savedDur;
-                if (ratio>=2.0f && ratio<=6.0f) {
-                    data=(data<<1)|(savedDur>duration?1:0); bits++; state=SaveDur;
-                    if (bits>=64) { emitResult(data,bits,0,"OOK"); state=Reset; }
-                } else if (duration>2000 && bits>=12) { emitResult(data,bits,0,"OOK"); state=Reset; }
-                else { if (bits>=12) emitResult(data,bits,0,"OOK"); state=Reset; }
+                if (ratio>=1.5f && ratio<=6.0f && duration < 10000) {
+                    data=(data<<1)|(savedDur>duration?1:0); bits++;
+                    consecutiveMiss=0;
+                    state=SaveDur;
+                    if (bits>=64) { tryEmit(); state=Reset; }
+                } else if (duration > 3000) {
+                    // Long gap = end of packet
+                    tryEmit();
+                    state=Reset;
+                } else {
+                    consecutiveMiss++;
+                    if (consecutiveMiss >= 3) {
+                        tryEmit();
+                        state=Reset;
+                    } else {
+                        // Skip one bad pulse, try to continue
+                        state=SaveDur;
+                    }
+                }
             } else state=Reset;
             break;
         }
