@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import './WiFiPage.css';
+import { useApp } from '../App';
 
 interface WiFiNetwork {
   ssid: string;
@@ -7,185 +7,155 @@ interface WiFiNetwork {
   encryption: number;
 }
 
-interface WiFiPageProps {
-  onBack: () => void;
-  apiCall: (endpoint: string, method?: string, data?: any) => Promise<any>;
-  addLog: (message: string, type?: 'info' | 'error' | 'success' | 'warning') => void;
-}
-
-function WiFiPage({ onBack, apiCall, addLog }: WiFiPageProps) {
+const WiFiPage: React.FC = () => {
+  const { apiCall, addLog } = useApp();
   const [networks, setNetworks] = useState<WiFiNetwork[]>([]);
   const [scanning, setScanning] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const [selectedNetwork, setSelectedNetwork] = useState<WiFiNetwork | null>(null);
+  const [selected, setSelected] = useState<WiFiNetwork | null>(null);
   const [password, setPassword] = useState('');
-  const [showPasswordInput, setShowPasswordInput] = useState(false);
 
-  // Сканирование сетей при загрузке
-  useEffect(() => {
-    scanNetworks();
-  }, []);
-
-  const scanNetworks = async () => {
+  const scan = async () => {
     setScanning(true);
-    addLog('🔍 Сканирование WiFi сетей...', 'info');
-    
     try {
       const result = await apiCall('/api/wifi/scan');
-      setNetworks(result);
-      addLog(`📡 Найдено сетей: ${result.length}`, 'success');
-    } catch (error) {
-      addLog('❌ Ошибка сканирования', 'error');
+      if (Array.isArray(result)) {
+        setNetworks(result.sort((a, b) => b.rssi - a.rssi));
+        addLog(`Найдено сетей: ${result.length}`, 'success');
+      }
+    } catch {
+      addLog('Ошибка сканирования', 'error');
     } finally {
       setScanning(false);
     }
   };
 
-  const handleNetworkClick = (network: WiFiNetwork) => {
-    setSelectedNetwork(network);
-    if (network.encryption !== 0) {
-      setShowPasswordInput(true);
-      setPassword('');
-    } else {
-      // Открытая сеть, подключаемся сразу
-      connectToNetwork(network, '');
-    }
-  };
+  useEffect(() => { scan(); }, []);
 
-  const connectToNetwork = async (network: WiFiNetwork, pass: string) => {
+  const connect = async () => {
+    if (!selected) return;
     setConnecting(true);
-    addLog(`🔌 Подключение к ${network.ssid}...`, 'info');
-    
+    addLog(`Подключение к ${selected.ssid}...`, 'info');
     try {
       const result = await apiCall('/api/wifi/connect', 'POST', {
-        ssid: network.ssid,
-        password: pass
+        ssid: selected.ssid,
+        password,
       });
-      
       if (result.success) {
-        addLog(`✅ Подключено! IP: ${result.ip}`, 'success');
-        setShowPasswordInput(false);
+        addLog(`Подключено! IP: ${result.ip}`, 'success');
+        setSelected(null);
         setPassword('');
-        
-        // Возвращаемся на главную через 2 секунды
-        setTimeout(() => {
-          onBack();
-        }, 2000);
       } else {
-        addLog(`❌ Ошибка подключения: ${result.error}`, 'error');
+        addLog(`Ошибка: ${result.error}`, 'error');
       }
-    } catch (error) {
-      addLog('❌ Ошибка подключения', 'error');
+    } catch {
+      addLog('Ошибка подключения', 'error');
     } finally {
       setConnecting(false);
     }
   };
 
-  const handleConnect = () => {
-    if (selectedNetwork) {
-      connectToNetwork(selectedNetwork, password);
+  const handleNetworkClick = (net: WiFiNetwork) => {
+    if (net.encryption === 0) {
+      setSelected(net);
+      setPassword('');
+      // Connect immediately to open networks
+      setConnecting(true);
+      apiCall('/api/wifi/connect', 'POST', { ssid: net.ssid, password: '' })
+        .then(r => {
+          if (r.success) addLog(`Подключено! IP: ${r.ip}`, 'success');
+          else addLog(`Ошибка: ${r.error}`, 'error');
+        })
+        .catch(() => addLog('Ошибка подключения', 'error'))
+        .finally(() => { setConnecting(false); setSelected(null); });
+    } else {
+      setSelected(net);
+      setPassword('');
     }
   };
 
-  const getSignalIcon = (rssi: number) => {
-    if (rssi > -50) return '📶';
-    if (rssi > -70) return '📶';
-    return '📶';
-  };
-
-  const getSignalClass = (rssi: number) => {
-    if (rssi > -50) return 'signal-strong';
-    if (rssi > -70) return 'signal-medium';
-    return 'signal-weak';
+  const signalLevel = (rssi: number) => {
+    if (rssi > -50) return 'green';
+    if (rssi > -70) return 'orange';
+    return 'red';
   };
 
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <button className="btn-back" onClick={onBack}>← Назад</button>
-        <h2>📡 Управление WiFi</h2>
-        <button 
-          className="btn btn-primary" 
-          onClick={scanNetworks}
-          disabled={scanning}
-        >
-          {scanning ? '⏳ Сканирование...' : '🔄 Обновить'}
-        </button>
-      </div>
+    <div>
+      <div className="page-title">WiFi</div>
 
-      {showPasswordInput && selectedNetwork && (
-        <div className="password-modal">
-          <div className="password-modal-content">
-            <h3>🔐 Подключение к {selectedNetwork.ssid}</h3>
+      <button
+        className="btn btn--primary btn--full"
+        onClick={scan}
+        disabled={scanning}
+        style={{ marginBottom: 12 }}
+      >
+        {scanning ? 'Сканирование...' : 'Сканировать сети'}
+      </button>
+
+      {networks.length === 0 && !scanning ? (
+        <div className="section">
+          <div className="empty">
+            <div className="empty-title">Сети не найдены</div>
+            <div className="empty-sub">Нажмите «Сканировать» для поиска</div>
+          </div>
+        </div>
+      ) : (
+        <div className="section">
+          <div className="section-header">Доступные сети ({networks.length})</div>
+          {networks.map((net, i) => (
+            <div
+              key={i}
+              className="list-item"
+              onClick={() => handleNetworkClick(net)}
+              style={{ cursor: 'pointer' }}
+            >
+              <div className="list-item-body">
+                <div className="list-item-title">{net.ssid || '(скрытая сеть)'}</div>
+                <div className="list-item-sub">
+                  <span className={`badge badge--${signalLevel(net.rssi)}`}>{net.rssi} dBm</span>
+                  {' '}
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {net.encryption === 0 ? 'Открытая' : 'Защищённая'}
+                  </span>
+                </div>
+              </div>
+              <span style={{ color: 'var(--text-muted)', fontSize: 18 }}>›</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Password modal */}
+      {selected && selected.encryption !== 0 && (
+        <div className="modal-overlay" onClick={() => setSelected(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-title">{selected.ssid}</div>
+            <div className="modal-text">Введите пароль для подключения</div>
             <input
+              className="input"
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyPress={(e) => {
-                if (e.key === 'Enter' && password && !connecting) {
-                  handleConnect();
-                }
-              }}
-              placeholder="Введите пароль"
-              className="password-input"
-              disabled={connecting}
+              onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && password && !connecting && connect()}
+              placeholder="Пароль"
               autoFocus
+              disabled={connecting}
+              style={{ marginBottom: 16 }}
             />
-            <div className="password-buttons">
-              <button 
-                className="btn btn-success" 
-                onClick={handleConnect}
-                disabled={connecting || !password}
-              >
-                {connecting ? '⏳ Подключение...' : '✅ Подключиться'}
+            <div className="modal-actions">
+              <button className="btn btn--ghost" onClick={() => setSelected(null)} disabled={connecting}>
+                Отмена
               </button>
-              <button 
-                className="btn btn-danger" 
-                onClick={() => {
-                  setShowPasswordInput(false);
-                  setPassword('');
-                }}
-                disabled={connecting}
-              >
-                ❌ Отмена
+              <button className="btn btn--primary" onClick={connect} disabled={!password || connecting}>
+                {connecting ? 'Подключение...' : 'Подключить'}
               </button>
             </div>
           </div>
         </div>
       )}
-
-      <div className="networks-list">
-        {networks.length === 0 && !scanning && (
-          <div className="empty-state">
-            <p>Нет доступных сетей</p>
-            <p>Нажмите "Обновить" для сканирования</p>
-          </div>
-        )}
-
-        {networks.map((network, index) => (
-          <div 
-            key={index} 
-            className={`network-item ${getSignalClass(network.rssi)}`}
-            onClick={() => handleNetworkClick(network)}
-          >
-            <div className="network-icon">
-              {getSignalIcon(network.rssi)}
-            </div>
-            <div className="network-info">
-              <div className="network-ssid">{network.ssid}</div>
-              <div className="network-details">
-                <span className="network-rssi">{network.rssi} dBm</span>
-                <span className="network-security">
-                  {network.encryption === 0 ? '🔓 Открытая' : '🔒 Защищённая'}
-                </span>
-              </div>
-            </div>
-            <div className="network-arrow">→</div>
-          </div>
-        ))}
-      </div>
     </div>
   );
-}
+};
 
 export default WiFiPage;

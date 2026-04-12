@@ -1,12 +1,18 @@
 #include "CC1101Manager.h"
 #include "SubGhzProtocols.h"
+#include "SubGhzDecoder.h"
 #include <math.h>
 #include <algorithm>
 
+// Глобальный мультидекодер (Flipper Zero architecture)
+static SubGhzMultiDecoder multiDecoder;
+
 namespace {
     constexpr unsigned long MIN_PULSE_US = 200;
-    constexpr unsigned long MAX_PULSE_US = 15000;
-    constexpr unsigned long END_GAP_US = 5000;
+    constexpr unsigned long MAX_PULSE_US = 30000; // CAME preamble ~18000, Nice FLO ~25200
+    // DEBUG: логируем первый буфер для анализа
+    static bool debugFirstBuffer = true;
+    constexpr unsigned long END_GAP_US = 28000; // > Nice FLO preamble (25200), < MAX_PULSE (30000)
     constexpr unsigned long GLUE_THRESHOLD_US = 40;
     constexpr int MIN_PULSES_TO_ACCEPT = 40;
     constexpr unsigned long DUPLICATE_SUPPRESS_MS = 3000; // Для RAW сигналов
@@ -14,7 +20,7 @@ namespace {
     // RSSI threshold отключен - как во Flipper Zero, фильтрация по RSSI не используется
     constexpr float TE_VARIANCE_LIMIT = 0.25f;
     constexpr int MIN_VALID_BITS = 12; // Минимум бит для валидного протокола (отфильтровываем код 0)
-    constexpr int MIN_SIGNAL_LENGTH = 30; // Минимум переходов для валидного сигнала (баланс между фильтрацией и чувствительностью)
+    constexpr int MIN_SIGNAL_LENGTH = 40; // Минимум переходов для валидного сигнала
     constexpr int MIN_RAW_SIGNAL_LENGTH = 40; // Минимум переходов для RAW сигнала
     constexpr float MIN_PATTERN_CONFIDENCE = 0.5f; // Минимум уверенности в наличии паттерна (50% импульсов должны группироваться)
 }
@@ -58,7 +64,7 @@ bool CC1101Manager::configureForRawMode() {
         return false;
     }
     
-    // Устанавливаем GDO0 -> RAW данные, GDO2 -> тактовый сигнал (как на Flipper)
+    // GDO0 -> Serial Data Async Output (0x0D) — как в Flipper Zero
     state = cc->setDIOMapping(0, RADIOLIB_CC1101_GDOX_SERIAL_DATA_ASYNC);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.println("[CC1101] ❌ Ошибка назначения GDO0 для RAW");
@@ -120,77 +126,14 @@ void CC1101Manager::resetRawBuffer() {
 }
 
 bool CC1101Manager::signalLooksValid(int pulseCount) {
-    // Более строгая проверка качества сигнала
+    // С Flipper-декодерами достаточно минимальной валидации —
+    // декодеры сами отфильтруют шум через преамбулу и структуру протокола
     if (pulseCount < MIN_SIGNAL_LENGTH) {
         return false;
     }
-    
-    long sum = 0;
-    unsigned long maxPulse = 0;
-    unsigned long minPulse = UINT32_MAX;
-    int validPulses = 0;
-    
-    for (int i = 0; i < pulseCount; i++) {
-        unsigned long val = rawSignalTimings[i];
-        if (val >= MIN_PULSE_US && val <= MAX_PULSE_US) {
-            if (val > maxPulse) maxPulse = val;
-            if (val < minPulse) minPulse = val;
-            sum += val;
-            validPulses++;
-        }
-    }
-    
-    // Должно быть достаточно валидных импульсов (75% для лучшей фильтрации шумов)
-    if (validPulses < pulseCount * 0.75f) {
-        return false; // Слишком много невалидных импульсов
-    }
-    
-    if (validPulses == 0) return false;
-    
-    float average = static_cast<float>(sum) / validPulses;
-    if (average < MIN_PULSE_US || average > MAX_PULSE_US) {
-        return false;
-    }
-    
-    // Более строгая проверка разброса значений (ужесточено до 3.5x для лучшей фильтрации)
-    if (maxPulse > average * 3.5f || minPulse < average / 3.5f) {
-        return false;
-    }
-    
-    // Проверка на наличие паттерна: импульсы должны группироваться вокруг нескольких значений
-    // Это признак структурированного сигнала, а не случайного шума
-    const int patternGroups = 5; // Количество групп для анализа паттерна
-    int groupCounts[patternGroups] = {0};
-    float groupSize = (maxPulse - minPulse) / patternGroups;
-    if (groupSize < 50) groupSize = 50; // Минимальный размер группы
-    
-    for (int i = 0; i < pulseCount; i++) {
-        unsigned long val = rawSignalTimings[i];
-        if (val >= MIN_PULSE_US && val <= MAX_PULSE_US) {
-            int group = (int)((val - minPulse) / groupSize);
-            if (group >= 0 && group < patternGroups) {
-                groupCounts[group]++;
-            }
-        }
-    }
-    
-    // Проверяем, что импульсы не распределены равномерно (это было бы шумом)
-    // Хороший сигнал имеет несколько доминирующих групп
-    int maxGroupCount = 0;
-    int totalGrouped = 0;
-    for (int i = 0; i < patternGroups; i++) {
-        if (groupCounts[i] > maxGroupCount) {
-            maxGroupCount = groupCounts[i];
-        }
-        totalGrouped += groupCounts[i];
-    }
-    
-    // Если самая большая группа содержит менее 30% импульсов, это вероятно шум
-    // Ужесточено для лучшей фильтрации ложных срабатываний
-    if (totalGrouped > 0 && maxGroupCount < totalGrouped * 0.30f) {
-        return false;
-    }
-    
+    // Убрана проверка разброса (maxPulse/average) — преамбулы CAME(18000мкс) и
+    // Nice FLO(25200мкс) имеют огромный разброс с данными(200-700мкс), это нормально.
+    // Убрана проверка pattern grouping — Flipper-декодеры определяют паттерн сами.
     return true;
 }
 
@@ -870,18 +813,14 @@ bool CC1101Manager::checkReceived() {
     // Получаем не-volatile копию индекса для безопасной работы
     int signalLength = static_cast<int>(rawSignalIndex);
 
-    if (!signalLooksValid(signalLength)) {
+    if (signalLength < MIN_SIGNAL_LENGTH) {
         resetRawBuffer();
         attachRawInterrupt();
         return false;
     }
 
     float estimatedTe = 0.0f;
-    if (!analyzePulsePattern(signalLength, estimatedTe)) {
-        resetRawBuffer();
-        attachRawInterrupt();
-        return false;
-    }
+    analyzePulsePattern(signalLength, estimatedTe); // Необязательно, Flipper-декодеры определяют TE сами
     
     CC1101* cc = (CC1101*)radio;
     int currentRssi = cc->getRSSI();
@@ -902,8 +841,41 @@ bool CC1101Manager::checkReceived() {
     String bitSequence = "";
     bitSequence.reserve(200); // Предварительное выделение памяти
     
-    // Пробуем декодировать протокол (signalLength уже определена выше)
-    bool decoded = decodeWithProtocols(signalLength, estimatedTe, decodedCode, protocolName, bitSequence);
+    // === Flipper Zero подход: прогоняем буфер через мультидекодер импульс за импульсом ===
+    // Каждый протокол имеет свой state machine и ищет свою уникальную преамбулу.
+    // Первый декодер, полностью распознавший пакет, побеждает.
+    bool decoded = false;
+    int decodedBitLength = 0;
+    float decodedTe = 0;
+
+    // Debug: первые 30 импульсов
+    Serial.printf("[CC1101] Буфер: %d импульсов. Первые: ", signalLength);
+    for (int i = 0; i < min(signalLength, 30); i++) {
+        Serial.printf("%lu%c ", rawSignalTimings[i], rawSignalLevels[i] ? 'H' : 'L');
+    }
+    Serial.println();
+
+    multiDecoder.resetAll();
+    for (int i = 0; i < signalLength; i++) {
+        ::DecoderResult dr = multiDecoder.feed(rawSignalLevels[i], rawSignalTimings[i]);
+        if (dr.ready) {
+            decodedCode = (uint32_t)(dr.data & 0xFFFFFFFF);
+            protocolName = dr.protocol;
+            decodedBitLength = dr.bitCount;
+            decodedTe = dr.te;
+            // Формируем bitString из data
+            bitSequence = "";
+            for (int b = dr.bitCount - 1; b >= 0; b--) {
+                bitSequence += ((dr.data >> b) & 1) ? '1' : '0';
+            }
+            decoded = true;
+            Serial.printf("[CC1101] Flipper-декодер: %s, %d бит, код: 0x%X, TE: %.0f\n",
+                          protocolName.c_str(), decodedBitLength, decodedCode, decodedTe);
+            break; // Первый сработавший — победитель
+        }
+    }
+
+    // Без fallback — только Flipper-декодеры
     
     // Фильтрация шумов: отбрасываем сигналы с подозрительными кодами
     if (decoded && protocolName != "RAW/Unknown") {
@@ -1235,7 +1207,7 @@ bool CC1101Manager::checkReceived() {
         lastKey.bitString = "";
         lastKey.bitLength = 0;
     }
-    lastKey.te = estimatedTe;
+    lastKey.te = (decodedTe > 0) ? decodedTe : estimatedTe;
     
     // Компактный однострочный вывод информации о ключе
     String hexCode = String(lastKey.code, HEX);
@@ -1573,23 +1545,29 @@ void IRAM_ATTR CC1101Manager::onInterrupt() {
         return;
     }
 
-    // Фильтруем импульсы за пределами разумных границ
-    if (delta < MIN_PULSE_US || delta > MAX_PULSE_US) {
-        // Если это очень большой промежуток после начала захвата, возможно конец сигнала
-        if (rawSignalIndex >= MIN_PULSES_TO_ACCEPT && delta > END_GAP_US) {
+    // Слишком короткие импульсы — шум, пропускаем
+    if (delta < MIN_PULSE_US) {
+        lastSignalLevel = level;
+        return;
+    }
+
+    // Длинная пауза: может быть преамбула (CAME=18000, Nice FLO=25200) или конец сигнала
+    if (delta > MAX_PULSE_US) {
+        if (rawSignalIndex >= MIN_PULSES_TO_ACCEPT) {
             rawSignalReady = true;
             receivedFlag = true;
             detachRawInterrupt();
-            return;
-        }
-        // Иначе сбрасываем буфер
-        if (delta > MAX_PULSE_US) {
+        } else {
+            // Мало данных — сброс
             rawSignalIndex = 0;
             firstEdgeCaptured = false;
         }
         lastSignalLevel = level;
         return;
     }
+
+    // Пауза в диапазоне END_GAP..MAX_PULSE — сохраняем в буфер (может быть преамбула)
+    // Не завершаем захват — пусть буфер наполняется, декодер разберётся
 
     // Сохраняем длительность ПРЕДЫДУЩЕГО уровня (до изменения)
     if (rawSignalIndex < MAX_RAW_SIGNAL_LENGTH - 1) {
@@ -1598,6 +1576,7 @@ void IRAM_ATTR CC1101Manager::onInterrupt() {
         rawSignalIndex++;
     }
 
+    // Конец сигнала: gap > END_GAP или буфер полный
     if (delta > END_GAP_US || rawSignalIndex >= MAX_RAW_SIGNAL_LENGTH - 1) {
         if (rawSignalIndex >= MIN_PULSES_TO_ACCEPT) {
             rawSignalReady = true;

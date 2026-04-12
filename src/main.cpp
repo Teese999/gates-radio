@@ -8,6 +8,8 @@
 #include <WebSocketsServer.h>
 #include <algorithm>
 #include <vector>
+#include <nvs_flash.h>
+#include <nvs.h>
 
 // Подключение кастомных модулей
 #include "CC1101Manager.h"
@@ -93,10 +95,58 @@ struct SystemState {
   bool wifiConnected;
   bool learningMode;
   float currentFrequency;
-  
+  float bitRate;
+  float freqDeviation;
+  float rxBandwidth;
+  int outputPower;
+  uint32_t gateOpenCount;
+
   // Временное хранилище для верификации сигналов
   std::vector<KeyRecognition> pendingRecognitions;
 };
+
+// --- Ring-buffer лог файл ---
+// Хранит последние N строк в SPIFFS, автоматически удаляет старые
+namespace RingLog {
+  static const char* LOG_FILE = "/log.txt";
+  static const size_t MAX_LOG_SIZE = 32768; // 32KB макс размер файла
+  static const size_t TRIM_TO_SIZE = 24576; // Обрезаем до 24KB когда превышен лимит
+
+  void append(const char* message) {
+    File f = SPIFFS.open(LOG_FILE, "a");
+    if (!f) return;
+
+    // Формируем строку лога с uptime
+    unsigned long sec = millis() / 1000;
+    char timeBuf[16];
+    snprintf(timeBuf, sizeof(timeBuf), "[%luh%02lum] ", sec / 3600, (sec % 3600) / 60);
+    f.print(timeBuf);
+    f.println(message);
+    size_t sz = f.size();
+    f.close();
+
+    // Если файл превысил лимит — обрезаем (удаляем начало, оставляем конец)
+    if (sz > MAX_LOG_SIZE) {
+      File rf = SPIFFS.open(LOG_FILE, "r");
+      if (!rf) return;
+      // Пропускаем начало файла
+      rf.seek(sz - TRIM_TO_SIZE);
+      // Ищем начало следующей строки
+      while (rf.available()) {
+        if (rf.read() == '\n') break;
+      }
+      String tail = rf.readString();
+      rf.close();
+      // Перезаписываем файл
+      File wf = SPIFFS.open(LOG_FILE, "w");
+      if (wf) {
+        wf.print("--- лог обрезан ---\n");
+        wf.print(tail);
+        wf.close();
+      }
+    }
+  }
+}
 
 // --- Хранилище данных ---
 SystemState systemState;
@@ -264,12 +314,67 @@ void handleWiFiConnect() {
   server.send(200, "application/json", responseStr);
 }
 
-// Сохранение всего состояния системы в NVS
+// Инициализация раздела userdata (вызывается один раз в setup)
+void initUserDataPartition() {
+  esp_err_t err = nvs_flash_init_partition("userdata");
+  if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    // Раздел повреждён — форматируем и инициализируем заново
+    Serial.println("[NVS] Форматирование раздела userdata...");
+    nvs_flash_erase_partition("userdata");
+    err = nvs_flash_init_partition("userdata");
+  }
+  if (err != ESP_OK) {
+    Serial.printf("[NVS] ОШИБКА инициализации userdata: %s\n", esp_err_to_name(err));
+  } else {
+    Serial.println("[NVS] Раздел userdata инициализирован");
+  }
+}
+
+// Сохранение строки в раздел userdata
+bool saveToUserData(const char* key, const String& value) {
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open_from_partition("userdata", "state", NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    Serial.printf("[NVS] Ошибка открытия userdata: %s\n", esp_err_to_name(err));
+    return false;
+  }
+  err = nvs_set_blob(handle, key, value.c_str(), value.length() + 1);
+  if (err == ESP_OK) {
+    nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return err == ESP_OK;
+}
+
+// Чтение строки из раздела userdata
+String loadFromUserData(const char* key) {
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open_from_partition("userdata", "state", NVS_READONLY, &handle);
+  if (err != ESP_OK) {
+    return "{}";
+  }
+  size_t required_size = 0;
+  err = nvs_get_blob(handle, key, NULL, &required_size);
+  if (err != ESP_OK || required_size == 0) {
+    nvs_close(handle);
+    return "{}";
+  }
+  char* buf = (char*)malloc(required_size);
+  if (!buf) {
+    nvs_close(handle);
+    return "{}";
+  }
+  err = nvs_get_blob(handle, key, buf, &required_size);
+  String result = (err == ESP_OK) ? String(buf) : String("{}");
+  free(buf);
+  nvs_close(handle);
+  return result;
+}
+
+// Сохранение всего состояния системы в раздел userdata
 void saveSystemState() {
-  preferences.begin("system", false);
-  
   JsonDocument doc;
-  
+
   // Сохраняем телефоны
   JsonArray phonesArray = doc["phones"].to<JsonArray>();
   for (const auto& phone : systemState.phones) {
@@ -278,7 +383,7 @@ void saveSystemState() {
     phoneObj["smsEnabled"] = phone.smsEnabled;
     phoneObj["callEnabled"] = phone.callEnabled;
   }
-  
+
   // Сохраняем ключи
   JsonArray keysArray = doc["keys"].to<JsonArray>();
   for (const auto& key : systemState.keys433) {
@@ -296,24 +401,35 @@ void saveSystemState() {
     keyObj["rssi"] = key.rssi;
     keyObj["timestamp"] = key.timestamp;
   }
-  
+
   // Сохраняем WiFi настройки
   doc["wifi"]["ssid"] = systemState.wifiSSID;
   doc["wifi"]["password"] = systemState.wifiPassword;
   doc["wifi"]["connected"] = systemState.wifiConnected;
-  
+
   // Сохраняем состояние режима обучения
   doc["learningMode"] = systemState.learningMode;
-  
+
   // Сохраняем частоту
   doc["frequency"] = systemState.currentFrequency;
-  
+
+  // Сохраняем CC1101 настройки
+  doc["bitRate"] = systemState.bitRate;
+  doc["freqDeviation"] = systemState.freqDeviation;
+  doc["rxBandwidth"] = systemState.rxBandwidth;
+  doc["outputPower"] = systemState.outputPower;
+
+  // Сохраняем счётчик открытий
+  doc["gateOpenCount"] = systemState.gateOpenCount;
+
   String jsonString;
   serializeJson(doc, jsonString);
-  preferences.putString("state", jsonString);
-  preferences.end();
-  
-  Serial.println("[NVS] Состояние системы сохранено");
+
+  if (saveToUserData("state", jsonString)) {
+    Serial.println("[NVS] Состояние сохранено в userdata (" + String(jsonString.length()) + " байт)");
+  } else {
+    Serial.println("[NVS] ОШИБКА сохранения в userdata!");
+  }
 }
 
 // Функция сравнения битовых строк с допуском
@@ -339,47 +455,61 @@ bool compareBitStrings(const String& str1, const String& str2, float minSimilari
   return similarity >= minSimilarity;
 }
 
-// Функция улучшенного сравнения ключей (как во Flipper Zero)
+// Функция улучшенного сравнения ключей
+// Проблема: один и тот же пульт может декодироваться как разные протоколы
+// (CAME 24-bit vs X10 20-bit и т.д.) из-за нестабильности декодера.
+// Решение: мягкое сравнение — приоритет bitString/code, протокол вторичен.
 bool isKeyMatch(const KeyEntry& saved, const ReceivedKey& received, const String& receivedBitString, int receivedBitLength, float receivedTe) {
-  // 1. Протокол должен совпадать (строгое сравнение)
-  if (saved.protocol != received.protocol) {
-    return false;
-  }
-  
-  // 2. Частота должна совпадать (допуск ±1 МГц)
+  // 1. Частота должна совпадать (допуск ±1 МГц)
   float currentFreq = CC1101Manager::getFrequency();
-  float freqDiff = (saved.frequency > currentFreq) ? 
-                   (saved.frequency - currentFreq) : 
+  float freqDiff = (saved.frequency > currentFreq) ?
+                   (saved.frequency - currentFreq) :
                    (currentFreq - saved.frequency);
   if (freqDiff > 1.0f) {
     return false;
   }
-  
-  // 3. Для всех протоколов: если есть битовая строка - используем её для сравнения
-  if (saved.bitString.length() > 0 && receivedBitString.length() > 0) {
-    // Для коротких протоколов (≤32 бит) требуем точное совпадение
+
+  // 2. Точное совпадение: протокол + bitString
+  if (saved.protocol == received.protocol &&
+      saved.bitString.length() > 0 && receivedBitString.length() > 0) {
     if (saved.bitLength <= 32) {
-      return (saved.bitString == receivedBitString);
-    }
-    // Для длинных протоколов (>32 бит) допускаем небольшие отличия (95% совпадение)
-    else {
-      return compareBitStrings(saved.bitString, receivedBitString, 0.95f);
+      if (saved.bitString == receivedBitString) return true;
+    } else {
+      if (compareBitStrings(saved.bitString, receivedBitString, 0.95f)) return true;
     }
   }
-  
-  // 4. Fallback: сравнение по коду (если нет битовой строки)
-  // Это для старых ключей или протоколов без битовой строки
-  if (saved.code == received.code) {
-    // Дополнительная проверка: TE должен быть примерно одинаковым (допуск ±30%)
+
+  // 3. Совпадение по коду (протокол может быть другим!)
+  // Один пульт CAME может детектиться то как CAME то как X10 — код при этом частично совпадает
+  if (saved.code != 0 && saved.code == received.code) {
+    // TE должен быть примерно одинаковым (допуск ±40%)
     if (saved.te > 0 && receivedTe > 0) {
       float teDiff = (saved.te > receivedTe) ? (saved.te / receivedTe) : (receivedTe / saved.te);
-      if (teDiff > 1.3f) { // Разница более 30%
-        return false;
-      }
+      if (teDiff > 1.4f) return false;
     }
     return true;
   }
-  
+
+  // 4. Совпадение по bitString содержанию (разные протоколы, одни данные)
+  // Если одна bitString содержит другую — это тот же пульт, просто декодировалось
+  // разное количество бит (напр. CAME 24 vs X10 20 — первые 20 бит одинаковые)
+  if (saved.bitString.length() >= 12 && receivedBitString.length() >= 12) {
+    const String& shorter = (saved.bitString.length() <= receivedBitString.length()) ? saved.bitString : receivedBitString;
+    const String& longer = (saved.bitString.length() > receivedBitString.length()) ? saved.bitString : receivedBitString;
+
+    // Проверяем что короткая строка является подстрокой длинной (начиная с начала или конца)
+    if (longer.startsWith(shorter) || longer.endsWith(shorter)) {
+      // Дополнительно проверяем TE (допуск ±40%)
+      if (saved.te > 0 && receivedTe > 0) {
+        float teDiff = (saved.te > receivedTe) ? (saved.te / receivedTe) : (receivedTe / saved.te);
+        if (teDiff > 1.4f) return false;
+      }
+      Serial.printf("[KeyMatch] Совпадение по bitString подстроке: saved=%s recv=%s\n",
+                    saved.protocol.c_str(), received.protocol.c_str());
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -600,11 +730,9 @@ bool isDuplicateForDisplay(const ReceivedKey& key) {
   return false;
 }
 
-  // Загрузка всего состояния системы из NVS
+// Загрузка всего состояния системы из раздела userdata
 void loadSystemState() {
-  preferences.begin("system", true);
-  String jsonString = preferences.getString("state", "{}");
-  preferences.end();
+  String jsonString = loadFromUserData("state");
   
   JsonDocument doc;
   deserializeJson(doc, jsonString);
@@ -678,6 +806,15 @@ void loadSystemState() {
   
   // Загружаем частоту
   systemState.currentFrequency = doc["frequency"] | 433.92;
+
+  // Загружаем CC1101 настройки
+  systemState.bitRate = doc["bitRate"] | 3.79f;
+  systemState.freqDeviation = doc["freqDeviation"] | 5.2f;
+  systemState.rxBandwidth = doc["rxBandwidth"] | 58.0f;
+  systemState.outputPower = doc["outputPower"] | 10;
+
+  // Загружаем счётчик открытий
+  systemState.gateOpenCount = doc["gateOpenCount"] | 0;
   
   // Принудительно сбрасываем режим обучения при загрузке
   systemState.learningMode = false;
@@ -929,7 +1066,40 @@ void handleGateTrigger() {
   Serial.println("[API] Активация ворот");
   sendLog("⚡ Сигнал на ворота отправлен", "success");
   GateControl::triggerGatePulse(500);
+  systemState.gateOpenCount++;
+  saveSystemState();
+  RingLog::append("Ворота активированы (API)");
   server.send(200, "application/json", "{\"success\":true}");
+}
+
+// Системная информация
+void handleSystemInfo() {
+  JsonDocument doc;
+  doc["uptime"] = millis() / 1000;
+  doc["freeHeap"] = ESP.getFreeHeap();
+  doc["totalHeap"] = ESP.getHeapSize();
+  doc["rssi"] = CC1101Manager::getRSSI();
+  doc["firmware"] = "v1.0";
+  doc["openCount"] = systemState.gateOpenCount;
+  doc["spiffsFree"] = SPIFFS.totalBytes() - SPIFFS.usedBytes();
+  doc["spiffsTotal"] = SPIFFS.totalBytes();
+  doc["keyCount"] = systemState.keys433.size();
+  doc["phoneCount"] = systemState.phones.size();
+
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+// Получение лог-файла
+void handleLogFile() {
+  if (SPIFFS.exists(RingLog::LOG_FILE)) {
+    File f = SPIFFS.open(RingLog::LOG_FILE, "r");
+    server.streamFile(f, "text/plain");
+    f.close();
+  } else {
+    server.send(200, "text/plain", "");
+  }
 }
 
 // Обработка получения частоты
@@ -983,15 +1153,84 @@ void handleFrequencySet() {
 
 // Обработка получения конфигурации CC1101
 void handleCC1101Config() {
-  CC1101Manager::printConfig();
-  
   JsonDocument doc;
   doc["frequency"] = CC1101Manager::getFrequency();
   doc["rssi"] = CC1101Manager::getRSSI();
   doc["status"] = "active";
-  
+  doc["bitRate"] = systemState.bitRate;
+  doc["frequencyDeviation"] = systemState.freqDeviation;
+  doc["rxBandwidth"] = systemState.rxBandwidth;
+  doc["outputPower"] = systemState.outputPower;
+
   String response;
   serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+// Сохранение всех настроек CC1101
+void handleCC1101Settings() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+    return;
+  }
+
+  JsonDocument doc;
+  deserializeJson(doc, server.arg("plain"));
+
+  bool ok = true;
+  JsonDocument resp;
+
+  // Частота
+  if (doc.containsKey("frequency")) {
+    float freq = doc["frequency"].as<float>();
+    if (freq >= 300.0 && freq <= 928.0) {
+      if (CC1101Manager::setFrequency(freq)) {
+        systemState.currentFrequency = freq;
+      } else { ok = false; }
+    }
+  }
+
+  // Битрейт
+  if (doc.containsKey("bitRate")) {
+    float br = doc["bitRate"].as<float>();
+    if (CC1101Manager::setBitRate(br)) {
+      systemState.bitRate = br;
+    }
+  }
+
+  // Девиация
+  if (doc.containsKey("frequencyDeviation")) {
+    float fd = doc["frequencyDeviation"].as<float>();
+    if (CC1101Manager::setFrequencyDeviation(fd)) {
+      systemState.freqDeviation = fd;
+    }
+  }
+
+  // RX bandwidth
+  if (doc.containsKey("rxBandwidth")) {
+    float rxBw = doc["rxBandwidth"].as<float>();
+    if (CC1101Manager::setRxBandwidth(rxBw)) {
+      systemState.rxBandwidth = rxBw;
+    }
+  }
+
+  // Output power (через RadioLib напрямую)
+  if (doc.containsKey("outputPower")) {
+    systemState.outputPower = doc["outputPower"].as<int>();
+  }
+
+  saveSystemState();
+
+  resp["success"] = ok;
+  resp["frequency"] = CC1101Manager::getFrequency();
+  resp["bitRate"] = systemState.bitRate;
+  resp["frequencyDeviation"] = systemState.freqDeviation;
+  resp["rxBandwidth"] = systemState.rxBandwidth;
+  resp["outputPower"] = systemState.outputPower;
+
+  String response;
+  serializeJson(resp, response);
+  sendLog("Настройки CC1101 обновлены", "success");
   server.send(200, "application/json", response);
 }
 
@@ -1004,11 +1243,10 @@ void setup() {
   Serial.println("=================================");
   Serial.println("Запуск системы...");
 
-  // Инициализация Preferences
-  preferences.begin("smart-gate", false);
-  Serial.println("[OK] Preferences инициализированы");
-  
-  // Загрузка состояния системы из постоянной памяти
+  // Инициализация раздела userdata для хранения ключей/телефонов/настроек
+  initUserDataPartition();
+
+  // Загрузка состояния системы из постоянной памяти (раздел userdata)
   loadSystemState();
   
 
@@ -1139,6 +1377,9 @@ void setup() {
   server.on("/api/frequency", HTTP_GET, handleFrequencyGet);
   server.on("/api/frequency/set", HTTP_POST, handleFrequencySet);
   server.on("/api/cc1101/config", HTTP_GET, handleCC1101Config);
+  server.on("/api/cc1101/settings", HTTP_POST, handleCC1101Settings);
+  server.on("/api/system/info", HTTP_GET, handleSystemInfo);
+  server.on("/api/system/log", HTTP_GET, handleLogFile);
   
   server.begin();
   Serial.println("[OK] Веб-сервер запущен на порту 80");
@@ -1204,14 +1445,13 @@ void loop() {
     }
   }
 
-  // Диагностика прерываний CC1101 (каждые 10 секунд в режиме обучения)
-  static unsigned long lastCC1101Diagnostic = 0;
-  if (systemState.learningMode && millis() - lastCC1101Diagnostic > 10000) {
-    lastCC1101Diagnostic = millis();
-    unsigned long intCount = CC1101Manager::getInterruptCount();
+  // RSSI стриминг в WebSocket (режим обучения — для визуализатора сигнала)
+  static unsigned long lastRssiStream = 0;
+  if (systemState.learningMode && millis() - lastRssiStream > 200) {
+    lastRssiStream = millis();
     int rssi = CC1101Manager::getRSSI();
-    Serial.printf("[CC1101] 🔍 Диагностика: Прерываний=%lu, RSSI=%d dBm\n", intCount, rssi);
-    sendLog("🔍 Прерываний: " + String(intCount) + ", RSSI: " + String(rssi) + " dBm", "info");
+    String rssiEvent = "{\"rssi\":" + String(rssi) + ",\"freq\":" + String(CC1101Manager::getFrequency()) + "}";
+    sendWebSocketEvent("rssi", rssiEvent.c_str());
   }
 
   // Очистка устаревших распознаваний (каждые 5 секунд)
@@ -1240,9 +1480,25 @@ void loop() {
       }
       
       if (systemState.learningMode) {
-        Serial.println("[CC1101] Режим обучения активен - обрабатываем ключ");
-        sendLog("🎓 Режим обучения: обрабатываем полученный ключ", "info");
-        
+        // В режиме обучения принимаем ТОЛЬКО декодированные протоколы,
+        // RAW/Unknown — это шум эфира, не сохраняем
+        if (receivedKey.protocol == "RAW/Unknown" || receivedKey.protocol == "RAW/Custom") {
+          Serial.printf("[CC1101] Обучение: пропускаем шум (%s, RSSI: %d)\n",
+                        receivedKey.protocol.c_str(), receivedKey.rssi);
+          // Отправляем в UI как сигнал (для спектрограммы), но не сохраняем
+          String keyData = "{\"code\":" + String(receivedKey.code) +
+                           ",\"rssi\":" + String(receivedKey.rssi) +
+                           ",\"protocol\":\"" + receivedKey.protocol + "\"" +
+                           ",\"bitLength\":" + String(receivedKey.bitLength) +
+                           ",\"frequency\":" + String(CC1101Manager::getFrequency()) + "}";
+          sendWebSocketEvent("key_received", keyData.c_str());
+          CC1101Manager::resetReceived();
+          return; // Выходим из loop(), обработаем следующий сигнал на следующей итерации
+        }
+
+        Serial.println("[CC1101] Режим обучения: декодирован " + receivedKey.protocol);
+        sendLog("Обнаружен: " + receivedKey.protocol + " " + String(receivedKey.bitLength) + " бит", "info");
+
         // Режим обучения - добавляем новый ключ с полной информацией
         if (!keyExists) {
           KeyEntry newKey;
@@ -1330,36 +1586,33 @@ void loop() {
         bool sendEventToUI = true;
 
         if (keyExists && existingKey != nullptr) {
-          if (verifyKeySignal(receivedKey, receivedKey.bitString, receivedKey.bitLength, receivedKey.te, systemState.learningMode)) {
-            if (existingKey->enabled) {
-              gateTriggered = true;
-              serialMessage = "[CC1101] ✅ Активация ворот ключом: " + existingKey->name +
-                              " (RSSI: " + String(receivedKey.rssi) + " dBm, " + receivedKey.protocol + ")";
-              hasSerialMessage = true;
-              logMessage = "🚪 Ворота активированы: " + existingKey->name;
-              logType = "success";
-              hasLogMessage = true;
-              GateControl::triggerGatePulse();
-            } else {
-              serialMessage = "[CC1101] ⚠️ Ключ отключен: " + existingKey->name;
-              hasSerialMessage = true;
-              logMessage = "⚠️ Ключ отключен: " + existingKey->name;
-              logType = "warning";
-              hasLogMessage = true;
-            }
-          } else {
-            serialMessage = "[CC1101] 🔍 Ожидание подтверждения: " + existingKey->name +
-                            " (RSSI: " + String(receivedKey.rssi) + " dBm)";
+          // Ключ найден в базе — активируем сразу без верификации (как Flipper Zero)
+          if (existingKey->enabled) {
+            gateTriggered = true;
+            serialMessage = "[CC1101] ✅ Активация ворот ключом: " + existingKey->name +
+                            " (RSSI: " + String(receivedKey.rssi) + " dBm, " + receivedKey.protocol + ")";
             hasSerialMessage = true;
+            logMessage = "🚪 Ворота активированы: " + existingKey->name;
+            logType = "success";
+            hasLogMessage = true;
+            GateControl::triggerGatePulse();
+            systemState.gateOpenCount++;
+            saveSystemState();
+            RingLog::append(("Ворота: " + existingKey->name + " RSSI:" + String(receivedKey.rssi)).c_str());
+          } else {
+            serialMessage = "[CC1101] ⚠️ Ключ отключен: " + existingKey->name;
+            hasSerialMessage = true;
+            logMessage = "⚠️ Ключ отключен: " + existingKey->name;
+            logType = "warning";
+            hasLogMessage = true;
           }
         } else {
+          // Неизвестный ключ — логируем только в Serial, не спамим WebSocket
           serialMessage = "[CC1101] ❓ Неизвестный ключ: " + receivedKey.protocol +
                           " 0x" + String(receivedKey.code, HEX) +
                           " (RSSI: " + String(receivedKey.rssi) + " dBm)";
           hasSerialMessage = true;
-          logMessage = "❓ Неизвестный ключ: " + receivedKey.protocol + " 0x" + String(receivedKey.code, HEX);
-          logType = "warning";
-          hasLogMessage = true;
+          hasLogMessage = false;
         }
 
         bool suppressDuplicate = isDuplicateForDisplay(receivedKey);

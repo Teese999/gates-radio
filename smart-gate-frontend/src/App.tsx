@@ -1,372 +1,489 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react';
 import './App.css';
 import WiFiPage from './pages/WiFiPage';
 import PhonePage from './pages/PhonePage';
 import KeyPage from './pages/KeyPage';
 import SettingsPage from './pages/SettingsPage';
 
-// WebSocket подключение
-const WS_URL = window.location.hostname === 'smartgate.local' 
-  ? 'ws://smartgate.local:81' 
-  : 'ws://192.168.4.1:81';
-
-interface KeyData {
-  key: number;
-  bitLength: number;
-  protocol: number;
-  timestamp: number;
-}
-
+// --- Types ---
 interface LogEntry {
+  id: number;
   timestamp: number;
   message: string;
   type: 'info' | 'error' | 'success' | 'warning';
 }
 
+interface WifiInfo {
+  ssid: string;
+  rssi: number;
+  ip: string;
+}
+
+type Page = 'home' | 'wifi' | 'phones' | 'keys' | 'settings';
+
+type WsEventHandler = (data: any) => void;
+
+interface GateTimings {
+  openDuration: number;
+  stayOpen: number;
+  closeDuration: number;
+}
+
+interface SystemInfo {
+  uptime: number;
+  freeHeap: number;
+  totalHeap: number;
+  rssi: number;
+  firmware: string;
+  openCount: number;
+}
+
+const PAGE_TITLES: Record<Page, string> = {
+  home: 'SmartGate',
+  keys: 'Ключи',
+  wifi: 'WiFi',
+  phones: 'Телефоны',
+  settings: 'Настройки',
+};
+
+const GATE_TIMINGS_KEY = 'smartgate_timings';
+
+const loadGateTimings = (): GateTimings => {
+  try {
+    const saved = localStorage.getItem(GATE_TIMINGS_KEY);
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  return { openDuration: 3, stayOpen: 15, closeDuration: 3 };
+};
+
+const saveGateTimings = (t: GateTimings) => {
+  localStorage.setItem(GATE_TIMINGS_KEY, JSON.stringify(t));
+};
+
+export interface AppContextValue {
+  apiCall: (endpoint: string, method?: string, data?: any) => Promise<any>;
+  addLog: (message: string, type?: LogEntry['type']) => void;
+  subscribe: (event: string, handler: WsEventHandler) => () => void;
+  connected: boolean;
+  gateStatus: 'closed' | 'opening' | 'open' | 'closing';
+  gateTimings: GateTimings;
+  setGateTimings: (t: GateTimings) => void;
+  systemInfo: SystemInfo;
+}
+
+// --- Context ---
+export const AppContext = createContext<AppContextValue>({
+  apiCall: async () => ({}),
+  addLog: () => {},
+  subscribe: () => () => {},
+  connected: false,
+  gateStatus: 'closed',
+  gateTimings: { openDuration: 3, stayOpen: 15, closeDuration: 3 },
+  setGateTimings: () => {},
+  systemInfo: { uptime: 0, freeHeap: 0, totalHeap: 0, rssi: 0, firmware: '', openCount: 0 },
+});
+
+export const useApp = () => useContext(AppContext);
+
+// --- Constants ---
+const BASE_URL = window.location.hostname === 'localhost'
+  ? 'http://192.168.4.1'
+  : `http://${window.location.hostname}`;
+
+const WS_URL = window.location.hostname === 'localhost'
+  ? 'ws://192.168.4.1:81'
+  : `ws://${window.location.hostname}:81`;
+
+let logIdCounter = 0;
+
+// --- Helpers ---
+function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}д ${h}ч`;
+  if (h > 0) return `${h}ч ${m}м`;
+  return `${m}м`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
+
+function timeAgo(ts: number): string {
+  if (!ts) return 'никогда';
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 5) return 'только что';
+  if (diff < 60) return `${diff} сек назад`;
+  if (diff < 3600) return `${Math.floor(diff / 60)} мин назад`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} ч назад`;
+  return `${Math.floor(diff / 86400)} дн назад`;
+}
+
+// --- App ---
 function App() {
-  const [ws, setWs] = useState<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
-  const [wifiStatus, setWifiStatus] = useState('disconnected');
-  const [wifiInfo, setWifiInfo] = useState<{ssid: string, rssi: number, ip: string} | null>(null);
+  const [wifiStatus, setWifiStatus] = useState<'connected' | 'disconnected'>('disconnected');
+  const [wifiInfo, setWifiInfo] = useState<WifiInfo | null>(null);
   const [phoneCount, setPhoneCount] = useState(0);
   const [keyCount, setKeyCount] = useState(0);
-  const [recentKeys, setRecentKeys] = useState<KeyData[]>([]);
-  const [notification, setNotification] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [currentPage, setCurrentPage] = useState<'home' | 'wifi' | 'phones' | 'keys' | 'settings'>('home');
+  const [currentPage, setCurrentPage] = useState<Page>('home');
+  const [notification, setNotification] = useState<string | null>(null);
+  const [gateTriggering, setGateTriggering] = useState(false);
+  const [gateStatus, setGateStatus] = useState<'closed' | 'opening' | 'open' | 'closing'>('closed');
+  const [gateTimings, setGateTimingsState] = useState<GateTimings>(loadGateTimings);
+  const [lastOpenTime, setLastOpenTime] = useState(0);
+  const [sessionOpenCount, setSessionOpenCount] = useState(0);
+  const [systemInfo, setSystemInfo] = useState<SystemInfo>({
+    uptime: 0, freeHeap: 0, totalHeap: 0, rssi: 0, firmware: 'v1.0', openCount: 0,
+  });
 
-  // Добавление лога
-  const addLog = (message: string, type: 'info' | 'error' | 'success' | 'warning' = 'info') => {
-    const log: LogEntry = {
-      timestamp: Date.now(),
-      message,
-      type
-    };
-    setLogs(prev => [log, ...prev.slice(0, 99)]); // Храним последние 100 логов
-  };
-
-  // Обработка WebSocket сообщений
-  const handleWebSocketMessage = (data: any) => {
-    switch (data.event) {
-      case 'log':
-        addLog(data.data.message, data.data.type || 'info');
-        break;
-      case 'key_received':
-        setRecentKeys(prev => [data.data, ...prev.slice(0, 9)]);
-        setNotification(`Получен ключ: ${data.data.key}`);
-        addLog(`🔑 Получен ключ: ${data.data.key} (протокол: ${data.data.protocol})`, 'info');
-        break;
-      case 'key_added':
-        setKeyCount(prev => prev + 1);
-        setNotification(`Добавлен новый ключ: ${data.data.name}`);
-        addLog(`🔑 Добавлен новый ключ: ${data.data.name}`, 'success');
-        break;
-      case 'wifi_status':
-        console.log('WiFi Status Update:', data.data);
-        setWifiStatus(data.data.status);
-        if (data.data.status === 'connected' && data.data.ssid) {
-          setWifiInfo({
-            ssid: data.data.ssid,
-            rssi: data.data.rssi,
-            ip: data.data.ip
-          });
-        } else {
-          setWifiInfo(null);
-        }
-        break;
-      case 'phone_count':
-        setPhoneCount(data.data.count);
-        break;
-      case 'key_count':
-        setKeyCount(data.data.count);
-        break;
-      default:
-        console.log('Неизвестное событие:', data.event);
-    }
-  };
-
-  // WebSocket подключение
-  useEffect(() => {
-    let websocket: WebSocket | null = null;
-    let reconnectTimeout: NodeJS.Timeout | null = null;
-    
-    const connect = () => {
-      websocket = new WebSocket(WS_URL);
-      
-      websocket.onopen = () => {
-        console.log('WebSocket подключен');
-        setConnected(true);
-        setWs(websocket);
-        addLog('✅ WebSocket подключен', 'success');
-      };
-      
-      websocket.onclose = () => {
-        console.log('WebSocket отключен');
-        setConnected(false);
-        setWs(null);
-        addLog('❌ WebSocket отключен', 'error');
-        
-        // Переподключение через 3 секунды
-        reconnectTimeout = setTimeout(() => {
-          addLog('🔄 Переподключение...', 'warning');
-          connect();
-        }, 3000);
-      };
-      
-      websocket.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          handleWebSocketMessage(data);
-        } catch (error) {
-          console.error('Ошибка парсинга WebSocket сообщения:', error);
-        }
-      };
-      
-      websocket.onerror = (error) => {
-        console.error('WebSocket ошибка:', error);
-      };
-    };
-    
-    connect();
-    
-    return () => {
-      if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-      }
-      if (websocket) {
-        websocket.close();
-      }
-    };
+  const setGateTimings = useCallback((t: GateTimings) => {
+    setGateTimingsState(t);
+    saveGateTimings(t);
   }, []);
 
-  // API вызовы
-  const apiCall = async (endpoint: string, method: string = 'GET', data: any = null) => {
-    const baseUrl = window.location.hostname === 'smartgate.local' 
-      ? 'http://smartgate.local' 
-      : 'http://192.168.4.1';
-    
-    const response = await fetch(`${baseUrl}${endpoint}`, {
+  const subscribersRef = useRef<Map<string, Set<WsEventHandler>>>(new Map());
+  const wsRef = useRef<WebSocket | null>(null);
+  const notificationTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const gateTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const gateTimingsRef = useRef(gateTimings);
+  useEffect(() => { gateTimingsRef.current = gateTimings; }, [gateTimings]);
+
+  // --- Gate status cycle ---
+  const startGateCycle = useCallback(() => {
+    if (gateTimerRef.current) clearTimeout(gateTimerRef.current);
+    const t = gateTimingsRef.current;
+
+    setLastOpenTime(Date.now());
+    setSessionOpenCount(prev => prev + 1);
+    setGateStatus('opening');
+    gateTimerRef.current = setTimeout(() => {
+      setGateStatus('open');
+      gateTimerRef.current = setTimeout(() => {
+        setGateStatus('closing');
+        gateTimerRef.current = setTimeout(() => {
+          setGateStatus('closed');
+          gateTimerRef.current = null;
+        }, t.closeDuration * 1000);
+      }, t.stayOpen * 1000);
+    }, t.openDuration * 1000);
+  }, []);
+
+  useEffect(() => {
+    return () => { if (gateTimerRef.current) clearTimeout(gateTimerRef.current); };
+  }, []);
+
+  // --- Notification ---
+  const showNotification = useCallback((msg: string) => {
+    setNotification(msg);
+    if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+    notificationTimerRef.current = setTimeout(() => setNotification(null), 3000);
+  }, []);
+
+  // --- Logging ---
+  const addLog = useCallback((message: string, type: LogEntry['type'] = 'info') => {
+    setLogs(prev => [{
+      id: ++logIdCounter,
+      timestamp: Date.now(),
+      message,
+      type,
+    }, ...prev.slice(0, 99)]);
+  }, []);
+
+  // --- API ---
+  const apiCall = useCallback(async (endpoint: string, method = 'GET', data: any = null) => {
+    const response = await fetch(`${BASE_URL}${endpoint}`, {
       method,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: data ? JSON.stringify(data) : null,
     });
-    
     return response.json();
-  };
+  }, []);
 
-  // Управление воротами
-  const [gateTriggering, setGateTriggering] = useState(false);
-  
+  // --- PubSub ---
+  const subscribe = useCallback((event: string, handler: WsEventHandler) => {
+    if (!subscribersRef.current.has(event)) {
+      subscribersRef.current.set(event, new Set());
+    }
+    subscribersRef.current.get(event)!.add(handler);
+    return () => { subscribersRef.current.get(event)?.delete(handler); };
+  }, []);
+
+  const emit = useCallback((event: string, data: any) => {
+    subscribersRef.current.get(event)?.forEach(handler => handler(data));
+  }, []);
+
+  // --- WebSocket ---
+  useEffect(() => {
+    let reconnectTimer: NodeJS.Timeout | null = null;
+    let alive = true;
+
+    const connect = () => {
+      if (!alive) return;
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+        addLog('Подключено к устройству', 'success');
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        wsRef.current = null;
+        if (alive) reconnectTimer = setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => {};
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          const { event, data } = msg;
+
+          switch (event) {
+            case 'log':
+              addLog(data.message, data.type || 'info');
+              if (data.type === 'success' && data.message?.toLowerCase().includes('ворота активированы')) {
+                startGateCycle();
+              }
+              break;
+            case 'wifi_status':
+              setWifiStatus(data.status);
+              if (data.status === 'connected' && data.ssid) {
+                setWifiInfo({ ssid: data.ssid, rssi: data.rssi, ip: data.ip });
+              } else {
+                setWifiInfo(null);
+              }
+              break;
+            case 'phone_count': setPhoneCount(data.count); break;
+            case 'key_count': setKeyCount(data.count); break;
+            case 'key_added':
+              setKeyCount(prev => prev + 1);
+              showNotification(`Ключ сохранён: ${data.name || data.protocol}`);
+              addLog(`Ключ сохранён: ${data.name} [${data.protocol}]`, 'success');
+              break;
+            case 'key_received':
+              addLog(`Сигнал: ${data.protocol || 'RAW'}, ${data.bitLength} бит, RSSI ${data.rssi}`, 'info');
+              break;
+            case 'gate_triggered':
+              startGateCycle();
+              showNotification(`Ворота: ${data.keyName || 'активация'}`);
+              break;
+          }
+
+          emit(event, data);
+        } catch {}
+      };
+    };
+
+    connect();
+    return () => {
+      alive = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      wsRef.current?.close();
+    };
+  }, [addLog, emit, showNotification, startGateCycle]);
+
+  // --- Load initial stats ---
+  useEffect(() => {
+    (async () => {
+      try {
+        const [phones, keys] = await Promise.all([
+          apiCall('/api/phones'),
+          apiCall('/api/keys'),
+        ]);
+        setPhoneCount(Array.isArray(phones) ? phones.length : 0);
+        setKeyCount(Array.isArray(keys) ? keys.length : 0);
+      } catch {}
+    })();
+  }, [apiCall]);
+
+  // --- Poll system info every 10s ---
+  useEffect(() => {
+    const fetchInfo = async () => {
+      try {
+        const info = await apiCall('/api/system/info');
+        if (info) setSystemInfo(prev => ({ ...prev, ...info }));
+      } catch {}
+    };
+    fetchInfo();
+    const interval = setInterval(fetchInfo, 10000);
+    return () => clearInterval(interval);
+  }, [apiCall]);
+
+  // --- Gate trigger ---
   const triggerGate = async () => {
-    if (gateTriggering) return; // Предотвращаем двойной клик
-    
+    if (gateTriggering) return;
     setGateTriggering(true);
     try {
       await apiCall('/api/gate/trigger', 'POST');
-      setNotification('Сигнал отправлен');
-    } catch (error) {
-      setNotification('Ошибка отправки сигнала');
-      addLog('❌ Ошибка отправки сигнала', 'error');
+      showNotification('Сигнал отправлен');
+      addLog('Сигнал на ворота отправлен', 'success');
+      startGateCycle();
+    } catch {
+      showNotification('Ошибка отправки');
+      addLog('Ошибка отправки сигнала', 'error');
     } finally {
-      // Разрешаем следующий клик через 1 секунду
-      setTimeout(() => {
-        setGateTriggering(false);
-      }, 1000);
+      setTimeout(() => setGateTriggering(false), 1000);
     }
   };
 
-  // Загрузка статистики
-  useEffect(() => {
-    const loadStats = async () => {
-      try {
-        const phones = await apiCall('/api/phones');
-        const keys = await apiCall('/api/keys');
-        setPhoneCount(phones.length);
-        setKeyCount(keys.length);
-      } catch (error) {
-        console.error('Ошибка загрузки статистики:', error);
-      }
-    };
-    
-    loadStats();
-  }, []);
+  // --- Context ---
+  const ctx: AppContextValue = {
+    apiCall, addLog, subscribe, connected, gateStatus, gateTimings, setGateTimings, systemInfo,
+  };
 
-  // Рендер страниц
-  if (currentPage === 'wifi') {
-    return (
-      <div className="App">
-        <div className="container">
-          <WiFiPage 
-            onBack={() => setCurrentPage('home')}
-            apiCall={apiCall}
-            addLog={addLog}
-          />
+  // --- Nav ---
+  const navItems: { page: Page; label: string; icon: string }[] = [
+    { page: 'home', label: 'Главная', icon: 'home' },
+    { page: 'keys', label: 'Ключи', icon: 'key' },
+    { page: 'wifi', label: 'WiFi', icon: 'wifi' },
+    { page: 'phones', label: 'Телефоны', icon: 'phone' },
+    { page: 'settings', label: 'Настройки', icon: 'settings' },
+  ];
+
+  const renderPage = () => {
+    switch (currentPage) {
+      case 'wifi': return <WiFiPage />;
+      case 'phones': return <PhonePage />;
+      case 'keys': return <KeyPage />;
+      case 'settings': return <SettingsPage />;
+      default: return renderHome();
+    }
+  };
+
+  const renderHome = () => (
+    <>
+      {/* Status row */}
+      <div className="status-row">
+        <div className="status-chip">
+          <span className="status-chip-label">Heap</span>
+          <span className="status-chip-value">{formatBytes(systemInfo.freeHeap)}</span>
+        </div>
+        <div className="status-chip">
+          <span className="status-chip-label">Uptime</span>
+          <span className="status-chip-value">{formatUptime(systemInfo.uptime)}</span>
+        </div>
+        <div className="status-chip">
+          <span className="status-chip-label">RSSI</span>
+          <span className="status-chip-value">{systemInfo.rssi || '—'} dBm</span>
         </div>
       </div>
-    );
-  }
 
-  if (currentPage === 'phones') {
-    return (
-      <div className="App">
-        <div className="container">
-          <PhonePage 
-            onBack={() => setCurrentPage('home')}
-            apiCall={apiCall}
-            addLog={addLog}
-          />
+      {/* Cards */}
+      <div className="cards">
+        <div className="card" onClick={() => setCurrentPage('keys')}>
+          <div className="card-value">{keyCount}</div>
+          <div className="card-label">Ключей</div>
+        </div>
+        <div className="card" onClick={() => setCurrentPage('wifi')}>
+          <div className={`card-dot ${wifiStatus === 'connected' ? 'dot-green' : 'dot-red'}`} />
+          <div className="card-label">{wifiInfo ? wifiInfo.ssid : 'WiFi'}</div>
+          {wifiInfo && <div className="card-sub">{wifiInfo.ip}</div>}
+        </div>
+        <div className="card" onClick={() => setCurrentPage('phones')}>
+          <div className="card-value">{phoneCount}</div>
+          <div className="card-label">Телефонов</div>
         </div>
       </div>
-    );
-  }
 
-  if (currentPage === 'keys') {
-    return (
-      <div className="App">
-        <div className="container">
-          <KeyPage 
-            onBack={() => setCurrentPage('home')}
-            apiCall={apiCall}
-            addLog={addLog}
-          />
+      {/* Gate */}
+      <div className="gate-section">
+        <div className={`gate-status gate-status--${gateStatus}`}>
+          <span className="gate-status-dot" />
+          <span className="gate-status-text">{
+            gateStatus === 'closed' ? 'Закрыто' :
+            gateStatus === 'opening' ? 'Открытие...' :
+            gateStatus === 'open' ? 'Открыто' : 'Закрытие...'
+          }</span>
         </div>
-      </div>
-    );
-  }
-
-  if (currentPage === 'settings') {
-    return (
-      <div className="App">
-        <div className="container">
-          <SettingsPage 
-            onBack={() => setCurrentPage('home')}
-            apiCall={apiCall}
-            addLog={addLog}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="App">
-      <div className="container">
-        {/* Заголовок */}
-        <div className="header">
-          <h1>🏠 Умные Ворота</h1>
-          <div className={`ws-status ${connected ? 'connected' : 'disconnected'}`}>
-            WebSocket: {connected ? 'Подключен' : 'Отключен'}
-          </div>
-        </div>
-
-        {/* Статистика */}
-        <div className="stats">
-          <div className="stat-card clickable wifi-card" onClick={() => setCurrentPage('wifi')}>
-            <div className="stat-icon">📶</div>
-            {wifiStatus === 'connected' && wifiInfo ? (
-              <>
-                <div className="stat-number">✅</div>
-                <div className="stat-label">{wifiInfo.ssid}</div>
-                <div className="wifi-details">
-                  <span className="wifi-rssi">{wifiInfo.rssi} dBm</span>
-                  <span className="wifi-ip">{wifiInfo.ip}</span>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="stat-number">❌</div>
-                <div className="stat-label">WiFi отключен</div>
-              </>
-            )}
-          </div>
-          
-          <div className="stat-card clickable" onClick={() => setCurrentPage('phones')}>
-            <div className="stat-icon">📱</div>
-            <div className="stat-number">{phoneCount}</div>
-            <div className="stat-label">Телефоны</div>
-          </div>
-          
-          <div className="stat-card clickable" onClick={() => setCurrentPage('keys')}>
-            <div className="stat-icon">🔑</div>
-            <div className="stat-number">{keyCount}</div>
-            <div className="stat-label">Ключи 433MHz</div>
-          </div>
-          
-          <div className="stat-card clickable" onClick={() => setCurrentPage('settings')}>
-            <div className="stat-icon">⚙️</div>
-            <div className="stat-number">—</div>
-            <div className="stat-label">Настройки</div>
-          </div>
-        </div>
-
-        {/* Управление воротами */}
-        <div className="gate-control">
-          <h2>🚪 Управление воротами</h2>
-          <div className="button-group">
-            <button 
-              className="btn btn-gate" 
-              onClick={triggerGate}
-              disabled={gateTriggering}
-            >
-              {gateTriggering ? '⏳ Отправка...' : '⚡ Активировать ворота'}
-            </button>
-          </div>
-        </div>
-
-        {/* Последние ключи */}
-        {recentKeys.length > 0 && (
-          <div className="recent-keys">
-            <h3>🔑 Последние полученные ключи</h3>
-            <div className="key-list">
-              {recentKeys.map((key, index) => (
-                <div key={index} className="key-item">
-                  <div className="key-code">
-                    <strong>Ключ:</strong> {key.key}
-                  </div>
-                  <div className="key-time">
-                    <strong>Время:</strong> {new Date(key.timestamp).toLocaleTimeString()}
-                  </div>
-                  <div className="key-details">
-                    <small>Протокол: {key.protocol}, Биты: {key.bitLength}</small>
-                  </div>
-                </div>
-              ))}
-            </div>
+        <button
+          className={`gate-btn ${gateTriggering ? 'gate-btn--active' : ''}`}
+          onClick={triggerGate}
+          disabled={gateTriggering}
+        >
+          {gateTriggering ? 'Отправка...' : 'Открыть ворота'}
+        </button>
+        {(lastOpenTime > 0 || sessionOpenCount > 0) && (
+          <div className="gate-stats">
+            {lastOpenTime > 0 && <span>Посл. открытие: {timeAgo(lastOpenTime)}</span>}
+            {sessionOpenCount > 0 && <span>За сессию: {sessionOpenCount}</span>}
           </div>
         )}
+      </div>
 
-        {/* Консоль логов */}
-        <div className="console">
-          <div className="console-header">
-            <h3>📟 Консоль логов</h3>
-            <button className="btn-clear" onClick={() => setLogs([])}>Очистить</button>
-          </div>
-          <div className="console-body">
-            {logs.length === 0 ? (
-              <div className="console-empty">Логи отсутствуют</div>
-            ) : (
-              logs.map((log, index) => (
-                <div key={index} className={`console-line console-${log.type}`}>
-                  <span className="console-time">
-                    {new Date(log.timestamp).toLocaleTimeString()}
-                  </span>
-                  <span className="console-message">{log.message}</span>
-                </div>
-              ))
-            )}
-          </div>
+      {/* Console */}
+      <div className="console">
+        <div className="console-bar">
+          <span className="console-title">Журнал</span>
+          <button className="console-clear" onClick={() => setLogs([])}>Очистить</button>
         </div>
+        <div className="console-body">
+          {logs.length === 0 ? (
+            <div className="console-empty">Нет записей</div>
+          ) : (
+            logs.map(log => (
+              <div key={log.id} className={`console-line console-line--${log.type}`}>
+                <span className="console-time">
+                  {new Date(log.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+                <span className="console-msg">{log.message}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </>
+  );
 
-        {/* Уведомления */}
+  return (
+    <AppContext.Provider value={ctx}>
+      <div className="app">
+        {/* Header */}
+        <header className="header">
+          {currentPage !== 'home' ? (
+            <button className="header-back" onClick={() => setCurrentPage('home')}>
+              <span className="header-back-arrow" />
+            </button>
+          ) : (
+            <div style={{ width: 32 }} />
+          )}
+          <h1 className="header-title">{PAGE_TITLES[currentPage]}</h1>
+          <div className={`header-status ${connected ? 'header-status--on' : 'header-status--off'}`}>
+            <span className="header-status-dot" />
+            {connected ? 'Online' : 'Offline'}
+          </div>
+        </header>
+
+        <main className="main">
+          {renderPage()}
+        </main>
+
+        <nav className="nav">
+          {navItems.map(item => (
+            <button
+              key={item.page}
+              className={`nav-item ${currentPage === item.page ? 'nav-item--active' : ''}`}
+              onClick={() => setCurrentPage(item.page)}
+            >
+              <span className={`nav-icon nav-icon--${item.icon}`} />
+              <span className="nav-label">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+
         {notification && (
-          <div className="notification" onClick={() => setNotification(null)}>
+          <div className="toast" onClick={() => setNotification(null)}>
             {notification}
           </div>
         )}
       </div>
-    </div>
+    </AppContext.Provider>
   );
 }
 
