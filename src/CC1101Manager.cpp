@@ -1388,15 +1388,18 @@ bool CC1101Manager::init(int csPin, int gdo0Pin, int gdo2Pin) {
         Serial.println("[CC1101] ⚠️ Ошибка установки OOK модуляции");
     }
 
-    // Параметры для AM650 (ASK/OOK модуляция)
-    // Битрейт: 3.79 kbps для стандартных протоколов
-    state = cc->setBitRate(3.79);
+    // Параметры для OOK650Async (как в Flipper Zero)
+    // Битрейт: ~40 kbps (Flipper: MDMCFG4=0x2A, MDMCFG3=0x93 = 39970 bps)
+    // Период бита = 25мкс — достаточно для Nero Radio TE=200мкс
+    // При 3.79 kbps (старое значение) период = 264мкс — Nero Radio терялся!
+    state = cc->setBitRate(39.97);
     if (state == RADIOLIB_ERR_NONE) {
-        Serial.println("[CC1101] Битрейт: 3.79 kbps (AM650)");
+        Serial.println("[CC1101] Битрейт: 39.97 kbps (OOK650, как Flipper Zero)");
     }
 
-    // Ширина полосы RX: 58 кГц (оптимально для AM650)
-    state = cc->setRxBandwidth(58.0);
+    // Ширина полосы RX: 270 кГц (как OOK270Async в Flipper — баланс чувствительности и шума)
+    // 650 кГц слишком широко — CC1101 ловит фоновый шум и GDO0 всегда HIGH
+    state = cc->setRxBandwidth(270.0);
     if (state == RADIOLIB_ERR_NONE) {
         Serial.println("[CC1101] Ширина полосы RX: 58 кГц (AM650)");
     }
