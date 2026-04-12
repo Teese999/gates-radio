@@ -37,7 +37,7 @@ public:
         case CheckDur:
             if (!level) {
                 float ratio = (savedDur>duration) ? (float)savedDur/duration : (float)duration/savedDur;
-                if (ratio>=2.0f && ratio<=4.5f) {
+                if (ratio>=2.0f && ratio<=6.0f) {
                     data=(data<<1)|(savedDur>duration?1:0); bits++; state=SaveDur;
                     if (bits>=64) { emitResult(data,bits,0,"OOK"); state=Reset; }
                 } else if (duration>2000 && bits>=12) { emitResult(data,bits,0,"OOK"); state=Reset; }

@@ -11,10 +11,11 @@ class ProtoNeroRadio : public SubGhzDecoderBase {
     int headerCount = 0;
     unsigned long savedDur = 0;
 
-    // Real signal has TE ~230-330 for short, ~430-760 for long
-    static constexpr unsigned long TE_S = 250;
-    static constexpr unsigned long TE_L = 500;
-    static constexpr unsigned long TE_D = 150; // Wide tolerance for real signals
+    // Unleashed: TE_short=200, TE_long=400, delta=80
+    // Real signal: short~200-210, long~410-420
+    static constexpr unsigned long TE_S = 200;
+    static constexpr unsigned long TE_L = 400;
+    static constexpr unsigned long TE_D = 100; // Wider than Unleashed (80) for CC1101 jitter
 
 public:
     void reset() override { state = Reset; data = 0; bits = 0; headerCount = 0; clearResult(); }
@@ -33,11 +34,16 @@ public:
             if (durationCheck(duration, TE_S, TE_D)) {
                 headerCount++;
             }
-            // Start bit: longer pulse ~3-4*TE_S after enough preamble pulses
-            else if (duration > TE_S * 2 && duration < TE_S * 6 && headerCount > 10) {
-                data = 0; bits = 0; state = SaveDur;
-            } else if (headerCount < 10) {
-                state = Reset; // Not enough preamble
+            // Any non-short pulse after preamble = transition to data
+            // Real signal: preamble is all ~200us, data starts with ~410us pulses
+            else if (headerCount >= 6) {
+                data = 0; bits = 0;
+                // This longer pulse is the first data element — process it
+                if (level && durationCheck(duration, TE_L, TE_D)) {
+                    savedDur = duration; state = CheckDur; // LONG HIGH, wait for LOW
+                } else {
+                    state = SaveDur; // Start bit or gap, wait for first HIGH
+                }
             } else state = Reset;
             break;
         case SaveDur:

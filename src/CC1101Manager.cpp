@@ -4,8 +4,31 @@
 #include <math.h>
 #include <algorithm>
 
+// Subclass CC1101 to access protected SPI register methods
+class CC1101Ex : public CC1101 {
+public:
+    using CC1101::CC1101;
+    int16_t writeReg(uint8_t reg, uint8_t value) { return SPIsetRegValue(reg, value); }
+    void writeRegDirect(uint8_t reg, uint8_t data) { SPIwriteRegister(reg, data); }
+};
+
 // Глобальный мультидекодер (Flipper Zero architecture)
 static SubGhzMultiDecoder multiDecoder;
+
+// Ring buffer for ISR -> main loop pulse streaming
+// ISR writes pulse data, main loop reads and feeds decoders
+static constexpr int RING_BUF_SIZE = 256;
+static volatile unsigned long ringTimings[RING_BUF_SIZE];
+static volatile bool ringLevels[RING_BUF_SIZE];
+static volatile int ringWriteIdx = 0;
+static int ringReadIdx = 0; // Only read from main loop
+
+// RT decoder result
+static volatile bool rtDecoderReady = false;
+static volatile uint64_t rtDecoderData = 0;
+static volatile int rtDecoderBits = 0;
+static volatile float rtDecoderTe = 0;
+static const char* volatile rtDecoderProtocol = nullptr;
 
 namespace {
     constexpr unsigned long MIN_PULSE_US = 200;
@@ -799,10 +822,64 @@ bool CC1101Manager::decodeWithProtocols(int pulseCount, float te, uint32_t& code
 }
 
 bool CC1101Manager::checkReceived() {
+    // === Stream decode: process ring buffer pulses through decoders ===
+    // This runs every main loop iteration — like Flipper's timer ISR but from main loop
+    int writeIdx = ringWriteIdx; // Snapshot volatile
+    int processed = 0;
+    while (ringReadIdx != writeIdx) {
+        processed++;
+        bool level = ringLevels[ringReadIdx];
+        unsigned long duration = ringTimings[ringReadIdx];
+        ringReadIdx = (ringReadIdx + 1) % RING_BUF_SIZE;
+
+        SubGhzDecoderResult dr = multiDecoder.feed(level, duration);
+        if (dr.ready) {
+            CC1101* cc = (CC1101*)radio;
+            int currentRssi = cc ? cc->getRSSI() : -99;
+
+            uint32_t code = (uint32_t)(dr.data & 0xFFFFFFFF);
+            String proto = dr.protocol ? String(dr.protocol) : "Unknown";
+
+            String bitStr = "";
+            for (int b = dr.bitCount - 1; b >= 0; b--) {
+                bitStr += ((dr.data >> b) & 1) ? '1' : '0';
+            }
+
+            Serial.printf("[CC1101] RT-декодер: %s, %d бит, код: 0x%X, TE: %.0f\n",
+                          proto.c_str(), dr.bitCount, code, dr.te);
+
+            lastKey.available = true;
+            lastKey.timestamp = millis();
+            lastKey.code = code;
+            lastKey.protocol = proto;
+            lastKey.bitString = bitStr;
+            lastKey.bitLength = dr.bitCount;
+            lastKey.te = dr.te;
+            lastKey.rssi = currentRssi;
+            lastKey.snr = 0;
+            lastKey.modulation = "ASK/OOK";
+            lastKey.rawData = bitStr;
+            lastKey.hash = code ^ (dr.bitCount << 16);
+            lastKey.dataLength = dr.bitCount;
+            return true;
+        }
+    }
+
+    static unsigned long lastRingLog = 0;
+    static int totalProcessed = 0;
+    totalProcessed += processed;
+    if (processed > 0 && millis() - lastRingLog > 3000) {
+        Serial.printf("[CC1101] Ring: %d импульсов (total: %d). Последний: %luus %c\n",
+                      processed, totalProcessed,
+                      ringReadIdx > 0 ? (unsigned long)ringTimings[(ringReadIdx - 1 + RING_BUF_SIZE) % RING_BUF_SIZE] : 0,
+                      ringReadIdx > 0 ? (ringLevels[(ringReadIdx - 1 + RING_BUF_SIZE) % RING_BUF_SIZE] ? 'H' : 'L') : '?');
+        lastRingLog = millis();
+    }
+
     if (!receivedFlag || !rawSignalReady) return false;
     if (radio == nullptr) return false;
 
-    // Фильтрация начальных сигналов: игнорируем сигналы в первые 3 секунды после инициализации
+    // Фильтрация начальных сигналов
     const unsigned long INIT_FILTER_MS = 3000;
     if (initTime > 0 && (millis() - initTime) < INIT_FILTER_MS) {
         resetRawBuffer();
@@ -855,7 +932,8 @@ bool CC1101Manager::checkReceived() {
     }
     Serial.println();
 
-    multiDecoder.resetAll();
+    // НЕ сбрасываем декодеры — state machine продолжает между буферами
+    // (Nero Radio преамбула может быть в одном буфере, данные в следующем)
     for (int i = 0; i < signalLength; i++) {
         ::DecoderResult dr = multiDecoder.feed(rawSignalLevels[i], rawSignalTimings[i]);
         if (dr.ready) {
@@ -1388,18 +1466,27 @@ bool CC1101Manager::init(int csPin, int gdo0Pin, int gdo2Pin) {
         Serial.println("[CC1101] ⚠️ Ошибка установки OOK модуляции");
     }
 
-    // Параметры для OOK650Async (как в Flipper Zero)
-    // Битрейт: ~40 kbps (Flipper: MDMCFG4=0x2A, MDMCFG3=0x93 = 39970 bps)
-    // Период бита = 25мкс — достаточно для Nero Radio TE=200мкс
-    // При 3.79 kbps (старое значение) период = 264мкс — Nero Radio терялся!
-    state = cc->setBitRate(39.97);
-    if (state == RADIOLIB_ERR_NONE) {
-        Serial.println("[CC1101] Битрейт: 39.97 kbps (OOK650, как Flipper Zero)");
-    }
+    // === EXACT Flipper Zero OOK650Async register preset ===
+    CC1101Ex* ccEx = static_cast<CC1101Ex*>(cc);
+    ccEx->writeRegDirect(0x02, 0x0D); // IOCFG0: Serial data async output
+    ccEx->writeRegDirect(0x03, 0x07); // FIFOTHR
+    ccEx->writeRegDirect(0x08, 0x32); // PKTCTRL0: async serial mode
+    ccEx->writeRegDirect(0x0B, 0x06); // FSCTRL1
+    ccEx->writeRegDirect(0x10, 0x17); // MDMCFG4: BW=650kHz, DRATE_E=7
+    ccEx->writeRegDirect(0x11, 0x32); // MDMCFG3: DRATE_M=50 → 3.79kbps
+    ccEx->writeRegDirect(0x12, 0x30); // MDMCFG2: OOK, no sync
+    ccEx->writeRegDirect(0x13, 0x00); // MDMCFG1
+    ccEx->writeRegDirect(0x14, 0x00); // MDMCFG0
+    ccEx->writeRegDirect(0x15, 0x18); // MCSM0: auto calibrate
+    ccEx->writeRegDirect(0x19, 0x18); // FOCCFG
+    ccEx->writeRegDirect(0x1B, 0x07); // AGCCTRL2
+    ccEx->writeRegDirect(0x1C, 0x00); // AGCCTRL1
+    ccEx->writeRegDirect(0x1D, 0x91); // AGCCTRL0
+    ccEx->writeRegDirect(0x20, 0xFB); // WORCTRL
+    ccEx->writeRegDirect(0x21, 0x11); // FREND0
+    ccEx->writeRegDirect(0x22, 0xB6); // FREND1
 
-    // Ширина полосы RX: 270 кГц (как OOK270Async в Flipper — баланс чувствительности и шума)
-    // 650 кГц слишком широко — CC1101 ловит фоновый шум и GDO0 всегда HIGH
-    state = cc->setRxBandwidth(270.0);
+    Serial.println("[CC1101] Регистры OOK650Async (точная копия Flipper Zero) установлены");
     if (state == RADIOLIB_ERR_NONE) {
         Serial.println("[CC1101] Ширина полосы RX: 58 кГц (AM650)");
     }
@@ -1569,13 +1656,18 @@ void IRAM_ATTR CC1101Manager::onInterrupt() {
         return;
     }
 
-    // Пауза в диапазоне END_GAP..MAX_PULSE — сохраняем в буфер (может быть преамбула)
-    // Не завершаем захват — пусть буфер наполняется, декодер разберётся
+    // Пишем в кольцевой буфер (main loop читает и кормит декодеры)
+    int nextWrite = (ringWriteIdx + 1) % RING_BUF_SIZE;
+    if (nextWrite != ringReadIdx) { // Не перезаписываем непрочитанное
+        ringTimings[ringWriteIdx] = delta;
+        ringLevels[ringWriteIdx] = lastSignalLevel;
+        ringWriteIdx = nextWrite;
+    }
 
-    // Сохраняем длительность ПРЕДЫДУЩЕГО уровня (до изменения)
+    // Также пишем в линейный буфер (для RAW fallback)
     if (rawSignalIndex < MAX_RAW_SIGNAL_LENGTH - 1) {
         rawSignalTimings[rawSignalIndex] = delta;
-        rawSignalLevels[rawSignalIndex] = lastSignalLevel; // Сохраняем предыдущий уровень
+        rawSignalLevels[rawSignalIndex] = lastSignalLevel;
         rawSignalIndex++;
     }
 
