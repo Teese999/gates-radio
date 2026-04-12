@@ -1,264 +1,170 @@
-import React, { useState, useEffect } from 'react';
-import './PhonePage.css';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useApp } from '../App';
 
 interface Phone {
-  id: string; // Теперь ID - это номер телефона
+  id: string;
   number: string;
   smsEnabled: boolean;
   callEnabled: boolean;
 }
 
-interface PhonePageProps {
-  onBack: () => void;
-  apiCall: (endpoint: string, method?: string, data?: any) => Promise<any>;
-  addLog: (message: string, type?: 'info' | 'error' | 'success' | 'warning') => void;
-}
-
-const PhonePage: React.FC<PhonePageProps> = ({ onBack, apiCall, addLog }) => {
+const PhonePage: React.FC = () => {
+  const { apiCall, addLog } = useApp();
   const [phones, setPhones] = useState<Phone[]>([]);
+  const [loading, setLoading] = useState(true);
   const [newPhone, setNewPhone] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
-  // Загрузка списка телефонов
-  const loadPhones = async () => {
+  const loadPhones = useCallback(async () => {
     try {
-      setLoading(true);
       const data = await apiCall('/api/phones');
-      setPhones(data);
-      addLog(`📱 Загружено ${data.length} телефонов`, 'success');
-    } catch (error) {
-      addLog('❌ Ошибка загрузки телефонов', 'error');
-      console.error('Ошибка загрузки телефонов:', error);
+      if (Array.isArray(data)) setPhones(data);
+    } catch {
+      addLog('Ошибка загрузки телефонов', 'error');
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiCall, addLog]);
 
-  // Добавление нового телефона
+  useEffect(() => { loadPhones(); }, [loadPhones]);
+
   const addPhone = async () => {
-    if (!newPhone.trim()) {
-      addLog('⚠️ Введите номер телефона', 'warning');
+    const digits = newPhone.replace(/\D/g, '');
+    if (digits.length !== 10) {
+      addLog('Номер должен содержать 10 цифр', 'warning');
       return;
     }
-
-    // Проверка формата номера (только цифры после +7)
-    const phoneNumber = newPhone.replace(/\D/g, '');
-    if (phoneNumber.length !== 10) {
-      addLog('⚠️ Номер должен содержать 10 цифр', 'warning');
-      return;
-    }
-
     try {
-      setLoading(true);
-      const fullNumber = `+7${phoneNumber}`;
-      const data = await apiCall('/api/phones', 'POST', { 
+      const fullNumber = `+7${digits}`;
+      const data = await apiCall('/api/phones', 'POST', {
         number: fullNumber,
         smsEnabled: true,
-        callEnabled: true
+        callEnabled: true,
       });
-      
       setPhones(prev => [...prev, data]);
       setNewPhone('');
-      addLog(`✅ Телефон ${fullNumber} добавлен`, 'success');
-    } catch (error) {
-      addLog('❌ Ошибка добавления телефона', 'error');
-      console.error('Ошибка добавления телефона:', error);
-    } finally {
-      setLoading(false);
+      addLog(`Телефон ${fullNumber} добавлен`, 'success');
+    } catch {
+      addLog('Ошибка добавления телефона', 'error');
     }
   };
 
-  // Удаление телефона
   const deletePhone = async (id: string) => {
     try {
-      setLoading(true);
       await apiCall('/api/phones/delete', 'POST', { id });
-      setPhones(prev => prev.filter(phone => phone.id !== id));
-      addLog('✅ Телефон удален', 'success');
-    } catch (error) {
-      addLog('❌ Ошибка удаления телефона', 'error');
-      console.error('Ошибка удаления телефона:', error);
+      setPhones(prev => prev.filter(p => p.id !== id));
+      addLog('Телефон удалён', 'success');
+    } catch {
+      addLog('Ошибка удаления', 'error');
     } finally {
-      setLoading(false);
-      setShowDeleteConfirm(null);
+      setDeleteTarget(null);
     }
   };
 
-  // Переключение SMS
-  const toggleSMS = async (id: string, enabled: boolean) => {
+  const toggleSms = async (id: string, enabled: boolean) => {
     try {
-      setLoading(true);
       await apiCall('/api/phones/update', 'PUT', { id, smsEnabled: enabled });
-      setPhones(prev => prev.map(phone => 
-        phone.id === id ? { ...phone, smsEnabled: enabled } : phone
-      ));
-      addLog(`📱 SMS ${enabled ? 'включен' : 'отключен'} для телефона`, 'success');
-    } catch (error) {
-      addLog('❌ Ошибка изменения настроек SMS', 'error');
-      console.error('Ошибка изменения настроек SMS:', error);
-    } finally {
-      setLoading(false);
+      setPhones(prev => prev.map(p => p.id === id ? { ...p, smsEnabled: enabled } : p));
+    } catch {
+      addLog('Ошибка обновления SMS', 'error');
     }
   };
 
-  // Переключение звонков
   const toggleCall = async (id: string, enabled: boolean) => {
     try {
-      setLoading(true);
       await apiCall('/api/phones/update', 'PUT', { id, callEnabled: enabled });
-      setPhones(prev => prev.map(phone => 
-        phone.id === id ? { ...phone, callEnabled: enabled } : phone
-      ));
-      addLog(`📞 Звонки ${enabled ? 'включены' : 'отключены'} для телефона`, 'success');
-    } catch (error) {
-      addLog('❌ Ошибка изменения настроек звонков', 'error');
-      console.error('Ошибка изменения настроек звонков:', error);
-    } finally {
-      setLoading(false);
+      setPhones(prev => prev.map(p => p.id === id ? { ...p, callEnabled: enabled } : p));
+    } catch {
+      addLog('Ошибка обновления звонков', 'error');
     }
   };
-
-  // Обработка ввода номера телефона
-  const handlePhoneInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value.replace(/\D/g, ''); // Только цифры
-    if (value.length <= 10) {
-      setNewPhone(value);
-    }
-  };
-
-  // Обработка нажатия Enter
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      addPhone();
-    }
-  };
-
-  useEffect(() => {
-    loadPhones();
-  }, []);
 
   return (
-    <div className="phone-page">
-      <div className="page-header">
-        <button className="btn-back" onClick={onBack}>← Назад</button>
-        <h2>📱 Управление телефонами</h2>
-      </div>
+    <div>
+      <div className="page-title">Телефоны</div>
 
-      {/* Форма добавления телефона */}
-      <div className="add-phone-section">
-        <h3>Добавить новый телефон</h3>
-        <div className="phone-input-group">
-          <div className="phone-prefix">+7</div>
+      {/* Add phone */}
+      <div className="section" style={{ padding: 14 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ color: 'var(--text-dim)', fontWeight: 600, fontSize: 14, flexShrink: 0 }}>+7</span>
           <input
-            type="text"
-            className="phone-input"
-            placeholder="Введите номер телефона"
+            className="input"
+            type="tel"
             value={newPhone}
-            onChange={handlePhoneInput}
-            onKeyPress={handleKeyPress}
+            onChange={e => {
+              const v = e.target.value.replace(/\D/g, '');
+              if (v.length <= 10) setNewPhone(v);
+            }}
+            onKeyDown={e => e.key === 'Enter' && addPhone()}
+            placeholder="9001234567"
             maxLength={10}
-            disabled={loading}
+            style={{ fontFamily: 'var(--mono)' }}
           />
-          <button 
-            className="btn btn-success"
-            onClick={addPhone}
-            disabled={loading || !newPhone.trim()}
-          >
-            {loading ? '⏳' : '➕'}
+          <button className="btn btn--primary" onClick={addPhone} disabled={newPhone.replace(/\D/g, '').length !== 10}>
+            Добавить
           </button>
         </div>
-        <div className="phone-hint">
-          Введите 10 цифр номера телефона (без +7)
-        </div>
       </div>
 
-      {/* Список телефонов */}
-      <div className="phones-section">
-        <h3>Зарегистрированные телефоны ({phones.length})</h3>
-        
-        {loading && phones.length === 0 ? (
-          <div className="loading">⏳ Загрузка...</div>
-        ) : phones.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-icon">📱</div>
-            <div className="empty-text">Телефоны не добавлены</div>
-            <div className="empty-hint">Добавьте первый телефон для управления воротами</div>
+      {/* Phone list */}
+      {loading ? (
+        <div className="empty"><div className="empty-title">Загрузка...</div></div>
+      ) : phones.length === 0 ? (
+        <div className="section">
+          <div className="empty">
+            <div className="empty-title">Нет телефонов</div>
+            <div className="empty-sub">Добавьте номер для управления воротами по SMS/звонку</div>
           </div>
-        ) : (
-          <div className="phones-list">
-            {phones.map((phone) => (
-              <div key={phone.id} className="phone-item">
-                <div className="phone-info">
-                  <div className="phone-number">{phone.number}</div>
-                  <div className="phone-status">
-                    <span className={`status-badge ${phone.smsEnabled ? 'active' : 'inactive'}`}>
-                      📱 SMS {phone.smsEnabled ? 'ВКЛ' : 'ВЫКЛ'}
-                    </span>
-                    <span className={`status-badge ${phone.callEnabled ? 'active' : 'inactive'}`}>
-                      📞 Звонок {phone.callEnabled ? 'ВКЛ' : 'ВЫКЛ'}
-                    </span>
-                  </div>
-                </div>
-                
-                <div className="phone-controls">
-                  <button
-                    className={`btn-toggle ${phone.smsEnabled ? 'active' : 'inactive'}`}
-                    onClick={() => toggleSMS(phone.id, !phone.smsEnabled)}
-                    disabled={loading}
-                    title={`${phone.smsEnabled ? 'Отключить' : 'Включить'} SMS`}
-                  >
-                    📱
-                  </button>
-                  
-                  <button
-                    className={`btn-toggle ${phone.callEnabled ? 'active' : 'inactive'}`}
-                    onClick={() => toggleCall(phone.id, !phone.callEnabled)}
-                    disabled={loading}
-                    title={`${phone.callEnabled ? 'Отключить' : 'Включить'} звонки`}
-                  >
-                    📞
-                  </button>
-                  
-                  <button
-                    className="btn-delete"
-                    onClick={() => setShowDeleteConfirm(phone.id)}
-                    disabled={loading}
-                    title="Удалить телефон"
-                  >
-                    🗑️
-                  </button>
+        </div>
+      ) : (
+        <div className="section">
+          <div className="section-header">Зарегистрированные ({phones.length})</div>
+          {phones.map(phone => (
+            <div key={phone.id} className="list-item">
+              <div className="list-item-body">
+                <div className="list-item-title" style={{ fontFamily: 'var(--mono)' }}>{phone.number}</div>
+                <div className="list-item-sub" style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                  <span className={`badge badge--${phone.smsEnabled ? 'green' : 'red'}`}>
+                    SMS {phone.smsEnabled ? 'вкл' : 'выкл'}
+                  </span>
+                  <span className={`badge badge--${phone.callEnabled ? 'green' : 'red'}`}>
+                    Звонок {phone.callEnabled ? 'вкл' : 'выкл'}
+                  </span>
                 </div>
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <label className="toggle" title="SMS">
+                  <input type="checkbox" checked={phone.smsEnabled} onChange={() => toggleSms(phone.id, !phone.smsEnabled)} />
+                  <span className="toggle-track" />
+                </label>
+                <label className="toggle" title="Звонок">
+                  <input type="checkbox" checked={phone.callEnabled} onChange={() => toggleCall(phone.id, !phone.callEnabled)} />
+                  <span className="toggle-track" />
+                </label>
+                <button
+                  className="btn btn--ghost"
+                  style={{ padding: '6px 10px', fontSize: 12 }}
+                  onClick={() => setDeleteTarget(phone.id)}
+                >
+                  Удалить
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
-      {/* Модальное окно подтверждения удаления */}
-      {showDeleteConfirm && (
-        <div className="modal-overlay" onClick={() => setShowDeleteConfirm(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3>Подтверждение удаления</h3>
-            <p>Вы уверены, что хотите удалить этот телефон?</p>
-            <p className="phone-to-delete">
-              {phones.find(p => p.id === showDeleteConfirm)?.number}
-            </p>
-            <div className="modal-buttons">
-              <button 
-                className="btn btn-danger"
-                onClick={() => deletePhone(showDeleteConfirm)}
-                disabled={loading}
-              >
-                {loading ? '⏳' : '🗑️ Удалить'}
-              </button>
-              <button 
-                className="btn"
-                onClick={() => setShowDeleteConfirm(null)}
-                disabled={loading}
-              >
-                Отмена
-              </button>
+      {/* Delete modal */}
+      {deleteTarget && (
+        <div className="modal-overlay" onClick={() => setDeleteTarget(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-title">Удалить телефон?</div>
+            <div className="modal-text">
+              {phones.find(p => p.id === deleteTarget)?.number} будет удалён.
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn--ghost" onClick={() => setDeleteTarget(null)}>Отмена</button>
+              <button className="btn btn--danger" onClick={() => deletePhone(deleteTarget)}>Удалить</button>
             </div>
           </div>
         </div>
