@@ -10,15 +10,15 @@
 - Сырые исходники читай только когда граф не дал ответа или нужны точные строки.
 - Запросы к графу: `/graphify query "вопрос"`, путь между узлами: `/graphify path "A" "B"`, объяснение узла: `/graphify explain "X"`.
 
-**2. После изменений кода — обнови граф:** `/graphify . --update --obsidian` (инкрементально переэкстрактит только изменённые файлы). Сборочные артефакты (`data/static/`, минифицированный `main.*.js`) в граф не включаем — это шум.
+**2. После изменений кода — обнови граф:** `/graphify . --update --obsidian` (инкрементально). Сборочные артефакты (`data/static/`, минифицированный `main.*.js`) в граф не включаем — это шум. `graphify-out/` в `.gitignore`, строится локально.
 
-**3. Самообучение на ошибках.** В начале сессии прочитай `tasks/lessons.md`. После КАЖДОЙ правки/замечания от пользователя или найденного бага — допиши туда урок: что пошло не так, почему, и правило, которое не даст повторить ошибку. Это живой файл, перечитывай и применяй его. Не повторяй ошибки, уже записанные там.
+**3. Самообучение на ошибках.** В начале сессии прочитай `tasks/lessons.md`. После КАЖДОЙ правки/замечания от пользователя или найденного бага — допиши туда урок: что пошло не так, почему, и правило, которое не даст повторить ошибку. Не повторяй ошибки, уже записанные там.
 
 ## Что это
 
-**«Умные Ворота»** — прошивка для **ESP32 DevKit (38 pin)** с радиомодулем **CC1101**. Принимает RF-брелоки 300–928 МГц (CAME, Nice, Keeloq, Princeton, PT2262, Holtek, FAAC, BFT, Somfy и др.), запоминает «доверенные» ключи и при их получении даёт импульс на реле/ворота. Управление и обучение — через веб-интерфейс по Wi-Fi. Логика декодирования сделана в стиле Flipper Zero (RAW OOK + перебор протоколов).
+**«Умные Ворота»** — прошивка для **ESP32 DevKit (38 pin)** с радиомодулем **CC1101**. Принимает RF-брелоки 300–928 МГц, распознаёт протокол (CAME, Nice, Keeloq, Princeton, Holtek, BFT, Somfy, StarLine, Security+ и др.), запоминает «доверенные» ключи и при их получении даёт импульс на реле/ворота. Управление и обучение — через веб-интерфейс по Wi-Fi. Декодеры портированы из прошивки **Flipper Zero Unleashed**.
 
-> ⚠️ **README.md устарел**: там описаны RF433-приёмник, дисплей ST7789 и джойстик. Их в коде **нет**. Источник правды — этот файл и `src/`.
+> ⚠️ **README.md устарел**: там RF433-приёмник, дисплей ST7789 и джойстик — в коде их **нет**. Источник правды — этот файл, граф знаний и `src/`.
 
 ## Железо и пины (см. `src/main.cpp`)
 
@@ -31,76 +31,84 @@
 | Реле/LED (импульс ворот) | 12 |
 | GSM SIM800L RX / TX (UART2) | 16 / 17 |
 
-GSM (SIM800L) физически не задействован — `GSMManager::init/handleGSM` закомментированы в `main.cpp`.
+GSM (SIM800L) физически не задействован — вызовы `GSMManager` закомментированы в `main.cpp`.
 
 ## Сборка, заливка, логи
 
-PlatformIO, env `esp32dev`, Arduino framework. Зависимости (`platformio.ini`): RadioLib 6.6, ArduinoJson 7, TinyGSM, WebSockets.
+PlatformIO, env `esp32dev`, Arduino framework. Зависимости (`platformio.ini`): RadioLib 6.6, ArduinoJson 7, TinyGSM, WebSockets. Кастомная таблица разделов — `partitions.csv`.
 
 ```bash
 platformio run                      # сборка прошивки
-platformio run --target upload      # залить прошивку (БЕЗ erase — сохраняет NVS)
+platformio run --target upload      # залить прошивку
 platformio run --target uploadfs    # залить SPIFFS (фронтенд из data/)
 platformio device monitor --baud 115200
 ./upload.sh                         # всё сразу: build React → copy в data/ → upload → uploadfs
 ```
 
-**Важно про NVS:** ключи, телефоны и Wi-Fi хранятся в NVS через `Preferences`. Прошивка заливается без стирания flash, чтобы данные пережили перепрошивку. Полное стирание — только явно: `platformio run --target erase`.
+### Хранение данных — раздел `userdata` (важно)
+Таблица разделов (`partitions.csv`) выделяет отдельный NVS-раздел **`userdata` (256KB @ 0x250000)** под ключи, телефоны и настройки. `main.cpp` пишет туда напрямую через `nvs_*_from_partition("userdata", ...)` (функции `saveSystemState`/`loadSystemState`). Раздел **не затрагивается** ни при `upload`, ни при `uploadfs` — данные пользователя переживают любую перепрошивку. Системный `nvs` (0x9000) — отдельно. Полное стирание всего: `platformio run --target erase`.
 
 ## Архитектура
 
 ```
 src/
-  main.cpp              # веб-сервер (:80) + WebSocket (:81) + вся бизнес-логика
-  CC1101Manager.cpp/.h  # ядро RF: RAW OOK приём, захват импульсов, декод протоколов
-  SubGhzProtocols.cpp/.h# ~50 конфигов протоколов + массив ALL_PROTOCOLS[]
+  main.cpp              # веб-сервер (:80) + WebSocket (:81) + бизнес-логика + userdata NVS
+  CC1101Manager.cpp/.h  # ядро RF: RAW OOK приём, захват импульсов, прогон через мультидекодер
+  SubGhzProtocols.cpp/.h# legacy config-массив ALL_PROTOCOLS[] (17 шт), большинство — алиасы
   GateControl.cpp/.h    # импульс на реле (GPIO12)
   GSMManager.cpp/.h     # GSM (заглушка, не подключён)
   WiFiManager.cpp/.h    # Wi-Fi
-  infrastructure/
-    Logger.cpp/.h       # логи в Serial + WebSocket
-    StorageService.h    # обёртка хранилища
-include/                # заголовки
-data/                   # СОБРАННЫЙ React-фронтенд (грузится в SPIFFS); не править руками
+  infrastructure/Logger # логи в Serial + WebSocket
+include/
+  SubGhzDecoderBase.h   # базовый класс декодера (state machine) + SubGhzMultiDecoderT
+  SubGhzDecoder.h       # SubGhzMultiDecoder: 40 декодеров + ProtoGenericOOK fallback
+  protocols/Proto*.h    # сами декодеры (CAME, NiceFlo, Keeloq, Princeton, NeroRadio,
+                        #   GateTx, StarLine, Batch2, Batch3) — порт Flipper Unleashed
+data/                   # СОБРАННЫЙ React-фронт (грузится в SPIFFS); не править руками; в .gitignore
 smart-gate-frontend/    # исходники React/TS (страницы: Keys, Phones, WiFi, Settings)
-reference_*.c           # референс-код из Flipper Zero (только для справки, не компилируется)
+partitions.csv          # таблица разделов с userdata
+reference_*.c           # референс из Flipper (справка, не компилируется)
 ```
 
-`main.cpp` — монолит (~1430 строк): все HTTP-эндпоинты, режим обучения, сравнение/верификация ключей, сериализация состояния в NVS живут в одном файле.
+`main.cpp` — монолит (~1670 строк): HTTP-эндпоинты, режим обучения, сравнение/верификация ключей, сериализация состояния в `userdata`.
 
-## Поток приёма ключа
+## Декодирование (главное изменение)
 
-1. **`CC1101Manager::onInterrupt()`** (IRAM, по фронту на GDO0) — пишет длительности импульсов в `rawSignalTimings[]`/`rawSignalLevels[]`. Склеивает шумовые импульсы < 40 мкс, детектит конец сигнала по большому gap (`END_GAP_US`), выставляет `receivedFlag`.
-2. **`checkReceived()`** (вызывается в `loop()`): `signalLooksValid()` → `analyzePulsePattern()` (авто-TE) → фильтр RSSI/шума → дедуп по хешу/коду.
-3. **`tryDecodeKnownProtocols()`** → для каждого протокола из `ALL_PROTOCOLS[]` перебирает варианты TE (×7), инверсию, manchester и смещение преамбулы (skip); `decodeProtocolRCSwitch()` собирает биты; выбирается лучший результат (приоритет полному декоду). Не распознал → `RAW/Unknown` (код = хеш сигнала).
-4. **`main.cpp::loop()`**: если `learningMode` — добавляет ключ (с фильтром близости `LEARNING_MODE_MIN_RSSI = -70 dBm`); иначе `isKeyMatch()` ищет совпадение среди сохранённых и `verifyKeySignal()` требует N повторов (адаптивно) → `GateControl::triggerGatePulse()`.
+Используется **новый мультидекодер в стиле Flipper Zero**, а НЕ старый перебор конфигов:
 
-Ключевые структуры: `ReceivedKey` (CC1101Manager.h), `KeyEntry` / `KeyRecognition` / `SystemState` (main.cpp), `SubGhzProtocolConfig` (SubGhzProtocols.h).
+1. **`CC1101Manager::onInterrupt()`** (IRAM, фронт на GDO0) — пишет длительности импульсов в `rawSignalTimings[]`/`rawSignalLevels[]`; склейка шума < 40 мкс; конец пакета по большому gap.
+2. **`checkReceived()`** (в `loop()`): валидация сигнала, фильтр RSSI (< −100 dBm — шум), затем **прогон буфера импульс-за-импульсом через `SubGhzMultiDecoder::feed()`** (CC1101Manager.cpp ~строка 877). Каждый из ~40 декодеров — свой state machine со своей преамбулой; **первый полностью распознавший пакет побеждает** (`break`). Fallback — `ProtoGenericOOK` (любой OOK 2:1…6:1, ≥20 бит). Если ничего — `RAW/Unknown` (код = хеш).
+3. Дальше — фильтры качества кода (нули/единицы/повторяющиеся паттерны) и дедупликация по хешу/коду.
+4. **`main.cpp::loop()`**: в `learningMode` сигналы `RAW/Unknown`/`RAW/Custom` **отбрасываются как шум** (сохраняются только декодированные протоколы); иначе `isKeyMatch()` ищет совпадение и `verifyKeySignal()` требует N повторов → `GateControl::triggerGatePulse()`.
+
+**Список декодеров** — в конструкторе `SubGhzMultiDecoder` (`include/SubGhzDecoder.h`): CAME/Twee/Atomo, Nice FLO/FloR-S, Nero Radio/Sketch, Keeloq, GateTX, Holtek, Linear, Chamberlain, Hormann, FAAC SLH, StarLine, Somfy Telis/Keytis, BFT Mitto, Dooya, Marantec, Clemsa, Doitrand, Phoenix V2, Magellan, Legrand, KingGates, Ansonic, SMC5326, Honeywell(+WDB), Alutech AT-4N, Holtek HT12X, Linear Delta3, Security+ v2, Megacode, iDo, Mastercode, PowerSmart + GenericOOK.
+
+> Старые `SubGhzProtocols.cpp` (`ALL_PROTOCOLS[]`, дедуп до 17 конфигов) и `tryDecodeKnownProtocols()`/`decodeWithProtocols()` в CC1101Manager — **legacy**, в основном пути приёма не используются. Не путать с активным мультидекодером.
 
 ## Сравнение ключей (main.cpp)
 
-- `isKeyMatch()`: строгое совпадение протокола + частоты (±1 МГц); ≤32 бит — точное совпадение `bitString`, >32 бит — 95% похожести (`compareBitStrings`); fallback по `code` + TE (±30%).
-- `verifyKeySignal()`: число требуемых повторов зависит от качества декода/RSSI/длины протокола (1–5). В режиме обучения принимает сразу.
-- Дедуп для UI: `isDuplicateForDisplay()` + `detectionHistory` (окно 60 с).
+- `isKeyMatch()`: строгое совпадение протокола + частоты (±1 МГц); ≤32 бит — точное совпадение `bitString`, >32 бит — 95% похожести; fallback по `code` + TE.
+- `verifyKeySignal()`: число требуемых повторов зависит от качества декода/RSSI/длины протокола (1–5). В обучении принимает сразу.
+- Дедуп для UI: `isDuplicateForDisplay()` + `detectionHistory`.
 
-## Веб-API (HTTP :80, события :81 WebSocket)
+Структуры: `ReceivedKey` (CC1101Manager.h), `SubGhzDecoderResult` (SubGhzDecoderBase.h), `KeyEntry`/`SystemState` (main.cpp).
 
-`GET/POST /api/keys`, `/api/keys/learn|stop|status|delete|update`, `/api/phones[...]`, `/api/wifi/scan|connect`, `/api/frequency[/set]`, `/api/cc1101/config`, `/api/gate/trigger`. WebSocket события: `log`, `key_received`, `key_added`, `wifi_status`. Статика отдаётся из SPIFFS (`/`, `/static/...`).
+## Конфигурация радио (`CC1101Manager::init()`)
 
-Wi-Fi: всегда поднимается AP `SmartGate-Config` / пароль `12345678` (`192.168.4.1`), плюс mDNS `smartgate.local`. При наличии сохранённых креды пытается подключиться к роутеру.
+ASK/OOK, **битрейт 20.0 kbps**, **RX BW 135 кГц**, частота по умолчанию 433.92 МГц (меняется рантайм через `/api/frequency/set`, 300–928 МГц). Direct/RAW режим: GDO0 = данные, GDO2 = clock. (Прежние 3.79 kbps / 58 кГц — устаревшие, заменены под Flipper OOK650.)
 
-## Конфигурация радио (Fixed Scan, как Flipper)
+## Веб-API (HTTP :80, WebSocket :81)
 
-В `CC1101Manager::init()`: ASK/OOK, битрейт 3.79 kbps, RX BW 58 кГц, девиация 5.2 кГц, мощность 10 dBm, частота по умолчанию 433.92 МГц. Частота меняется рантайм через `/api/frequency/set` (300–928 МГц).
+`GET/POST /api/keys`, `/api/keys/learn|stop|status|delete|update`, `/api/phones[...]`, `/api/wifi/scan|connect`, `/api/frequency[/set]`, `/api/cc1101/config`, `/api/gate/trigger`. WebSocket-события: `log`, `key_received`, `key_added`, `wifi_status`. Статика — из SPIFFS. Wi-Fi: всегда AP `SmartGate-Config` / `12345678` (`192.168.4.1`) + mDNS `smartgate.local`; при сохранённых креды — коннект к роутеру.
 
 ## Известные ограничения / TODO
 
-- **Rolling code не поддержан**: Keeloq/Nice FloR сравниваются как статические коды — настоящий динамический код так не отловить.
-- **Только OOK/ASK реально работает.** `setModulation()` для FSK/MSK/GFSK — заглушка → часть 868-МГц брелоков не возьмётся.
+- **Rolling code частично:** есть декодеры Keeloq / Security+ v2, но сравнение ключей статическое — настоящий динамический код по-прежнему не валидируется криптографически.
+- **FSK/MSK/GFSK** — реально работает только OOK/ASK; часть 868-МГц брелоков не возьмётся.
 - **Только приём (RX).** TX (эмуляция/отправка ключа) не реализован.
-- README рассинхронизирован с кодом; `main.cpp` стоило бы разнести по модулям.
-- `data/` — артефакт сборки фронта; менять UI нужно в `smart-gate-frontend/` и пересобирать (`./upload.sh` делает это сам).
+- README рассинхронизирован с кодом; `main.cpp` стоило бы разнести по модулям; в CC1101Manager остался legacy-декодер.
+- `data/` — артефакт сборки фронта; UI правится в `smart-gate-frontend/` и пересобирается (`./upload.sh`).
 
 ## Стиль
 
-Комментарии и логи — на русском, как в существующем коде. Не плодить временные костыли (см. глобальные инструкции пользователя). Перед «готово» — проверять реальным запуском/логами, а не только сборкой.
+Комментарии и логи — на русском, как в коде. Без временных костылей, искать корневую причину. Перед «готово» — проверять реальным запуском/логами, а не только сборкой.
