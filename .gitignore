@@ -19,6 +19,13 @@ __pycache__/
 smart-gate-frontend/node_modules/*
 smart-gate-frontend/build/*
 data/
+
+# Knowledge graph (build locally, not committed)
+graphify-out/
+
+# Claude Code local state
+.claude/
+
 # Logs
 *.log
 
