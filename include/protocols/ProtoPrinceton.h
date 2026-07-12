@@ -31,7 +31,11 @@ public:
             if (level) { savedDur = duration; state = CheckDur; }
             else {
                 if (bits >= 24) {
-                    float te = teSum / (float)(bits * 2);
+                    // teSum накапливает по одному короткому импульсу (~TE_S) на бит,
+                    // поэтому TE = teSum/bits (как и во втором пути завершения ниже).
+                    // Раньше здесь было /(bits*2) — тот же ключ получал вдвое меньший TE,
+                    // из-за чего сравнение по TE (±40%) могло не совпасть само с собой.
+                    float te = teSum / (float)bits;
                     emitResult(data, bits, te, "Princeton");
                 }
                 state = Reset;

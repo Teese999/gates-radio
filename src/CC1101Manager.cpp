@@ -881,10 +881,15 @@ bool CC1101Manager::checkReceived() {
             protocolName = dr.protocol;
             decodedBitLength = dr.bitCount;
             decodedTe = dr.te;
-            // Формируем bitString из data
+            // Формируем bitString из data (+ data_2 для протоколов > 64 бит).
+            // Раньше цикл делал `dr.data >> b` при b >= 64 — это UB для uint64
+            // (на Xtensa сдвиг маскируется mod 64 и дублирует младшие биты, теряя
+            // верхнюю часть длинных ключей). Теперь старшие биты берём из data_2.
             bitSequence = "";
             for (int b = dr.bitCount - 1; b >= 0; b--) {
-                bitSequence += ((dr.data >> b) & 1) ? '1' : '0';
+                uint64_t src = (b >= 64) ? dr.data_2 : dr.data;
+                int shift = (b >= 64) ? (b - 64) : b;
+                bitSequence += ((src >> shift) & 1) ? '1' : '0';
             }
             decoded = true;
             Serial.printf("[CC1101] Flipper-декодер: %s, %d бит, код: 0x%X, TE: %.0f\n",
@@ -1281,6 +1286,11 @@ ReceivedKey CC1101Manager::getReceivedKey() {
 
 // Сброс принятых данных
 void CC1101Manager::resetReceived() {
+    // ВАЖНО: сначала снимаем прерывание, иначе ISR может параллельно писать в буфер
+    // во время сброса (гонка), а главное — без повторного attach приём мог бы
+    // остаться отключённым навсегда (GDO0 detach в ISR + очистка флагов здесь).
+    detachRawInterrupt();
+
     lastKey.available = false;
     lastKey.code = 0;
     lastKey.rawData = "";
@@ -1288,10 +1298,14 @@ void CC1101Manager::resetReceived() {
     lastKey.bitLength = 0;
     lastKey.te = 0.0f;
     lastKey.hash = 0;
-    receivedFlag = false;
-    rawSignalReady = false;
-    rawSignalIndex = 0;
-    lastInterruptTime = 0;
+
+    // resetRawBuffer() корректно сбрасывает индекс/флаги и ставит
+    // lastInterruptTime = micros(), firstEdgeCaptured = false — поэтому следующая
+    // дельта не будет посчитана как micros()-0 (конец пакета на пустом месте).
+    resetRawBuffer();
+
+    // Заново вооружаем приём — без этого устройство переставало принимать брелоки.
+    attachRawInterrupt();
     Serial.println("[CC1101] Буфер приема очищен");
 }
 
@@ -1354,8 +1368,8 @@ void CC1101Manager::printConfig() {
     Serial.println("╠════════════════════════════════════════════════════════════╣");
     Serial.printf("║ Частота:          %-33.2f МГц║\n", currentFrequency);
     Serial.println("║ Модуляция:        AM650 (ASK/OOK)                         ║");
-    Serial.println("║ Битрейт:          3.79 kbps                                ║");
-    Serial.println("║ Ширина полосы RX: 58.0 кГц                                 ║");
+    Serial.println("║ Битрейт:          20.0 kbps                                ║");
+    Serial.println("║ Ширина полосы RX: 135.0 кГц                                ║");
     Serial.println("║ Девиация:         5.2 кГц                                  ║");
     Serial.println("║ Выходная мощность:10 dBm                                   ║");
     Serial.println("║ Режим:            RAW OOK (Direct Mode)                    ║");
