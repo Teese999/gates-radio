@@ -28,10 +28,11 @@
 | CC1101 GDO0 (RAW data) | 4 |
 | CC1101 GDO2 (clock) | 2 |
 | SPI SCK / MISO / MOSI | 18 / 19 / 23 |
-| Реле/LED (импульс ворот) | 12 |
+| Реле K1 «открыть» (NPN-ключ) | 12 |
+| Реле K2 «закрыть» (NPN-ключ) | 13 |
 | GSM SIM800L RX / TX (UART2) | 16 / 17 |
 
-GSM (SIM800L) физически не задействован — вызовы `GSMManager` закомментированы в `main.cpp`.
+GSM (SIM800L, UART2 9600) — **активен**: открытие ворот по входящему звонку (+CLIP → ATH) или SMS (+CMT) с номеров из `systemState.phones` (страница «Телефоны», флаги `callEnabled`/`smsEnabled`). Белый список — единый в main.cpp, GSMManager получает колбэки `gsmTrustedCheck`/`gsmGateOpen`. Инициализация неблокирующая (state machine PROBE→CONFIG→READY в `handleGSM()`); без модуля прошивка работает как раньше. Сравнение номеров — по последним 10 цифрам. SIM800L — только 2G; PIN на SIM-карте должен быть отключён.
 
 ## Сборка, заливка, логи
 
@@ -55,8 +56,8 @@ src/
   main.cpp              # веб-сервер (:80) + WebSocket (:81) + бизнес-логика + userdata NVS
   CC1101Manager.cpp/.h  # ядро RF: RAW OOK приём, захват импульсов, прогон через мультидекодер
   SubGhzProtocols.cpp/.h# legacy config-массив ALL_PROTOCOLS[] (17 шт), большинство — алиасы
-  GateControl.cpp/.h    # импульс на реле (GPIO12)
-  GSMManager.cpp/.h     # GSM (заглушка, не подключён)
+  GateControl.cpp/.h    # цикл ворот через 2 реле: открыть→пауза→закрыть (GPIO12/13)
+  GSMManager.cpp/.h     # GSM SIM800L: звонки/SMS → ворота (AT-команды, UART2)
   WiFiManager.cpp/.h    # Wi-Fi
   infrastructure/Logger # логи в Serial + WebSocket
 include/
@@ -99,7 +100,7 @@ ASK/OOK, **битрейт 20.0 kbps**, **RX BW 135 кГц**, частота по
 
 ## Веб-API (HTTP :80, WebSocket :81)
 
-`GET/POST /api/keys`, `/api/keys/learn|stop|status|delete|update`, `/api/phones[...]`, `/api/wifi/scan|connect`, `/api/frequency[/set]`, `/api/cc1101/config`, `/api/gate/trigger`. WebSocket-события: `log`, `key_received`, `key_added`, `wifi_status`. Статика — из SPIFFS. Wi-Fi: всегда AP `SmartGate-Config` / `12345678` (`192.168.4.1`) + mDNS `smartgate.local`; при сохранённых креды — коннект к роутеру.
+`GET/POST /api/keys`, `/api/keys/learn|stop|status|delete|update`, `/api/phones[...]`, `/api/wifi/scan|connect`, `/api/frequency[/set]`, `/api/cc1101/config`, `/api/gate/trigger`, `GET/POST /api/gate/config` (тайминги цикла ворот, сек). WebSocket-события: `log`, `key_received`, `key_added`, `wifi_status`. Статика — из SPIFFS. Wi-Fi: всегда AP `SmartGate-Config` / `12345678` (`192.168.4.1`) + mDNS `smartgate.local`; при сохранённых креды — коннект к роутеру.
 
 ## Известные ограничения / TODO
 

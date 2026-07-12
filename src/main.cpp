@@ -27,8 +27,9 @@
 // MISO - GPIO19
 // MOSI - GPIO23
 
-// Пины для управления воротами
-#define LED_PIN     12 // GPIO12 - Управление светодиодом/реле
+// Пины управления воротами: два реле HF46F-G через NPN-ключи (BC337 + 1 кОм + 1N4007)
+#define GATE_OPEN_PIN  12 // GPIO12 - ключ реле K1: канал «открыть»
+#define GATE_CLOSE_PIN 13 // GPIO13 - ключ реле K2: канал «закрыть»
 
 // Пины для GSM SIM800L (UART2)
 #define GSM_RX_PIN  16 // GPIO16 - RX пин для UART2 (подключается к TX GSM модуля)
@@ -101,6 +102,11 @@ struct SystemState {
   int outputPower;
   uint32_t gateOpenCount;
 
+  // Тайминги цикла ворот, сек (NeoRelay2: открытие → открыто → закрытие)
+  int gateOpenSec = 3;
+  int gateStaySec = 15;
+  int gateCloseSec = 3;
+
   // Временное хранилище для верификации сигналов
   std::vector<KeyRecognition> pendingRecognitions;
 };
@@ -168,7 +174,7 @@ static std::vector<RecentDetection> detectionHistory;
 // --- Объявления функций ---
 void sendWebSocketEvent(const char* event, const char* data);
 void sendLog(String message, const char* type);
-void saveSystemState();
+bool saveSystemState();
 void loadSystemState();
 
 // Функция улучшенного сравнения ключей (как во Flipper Zero)
@@ -198,12 +204,50 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
         sendLog(welcomeMsg, "success");
       }
       break;
-    case WStype_TEXT:
-      Serial.printf("[WebSocket] Получено: %s\n", payload);
+    case WStype_TEXT: {
+      // Троттлинг: печать каждого кадра топила Serial (шли сотни кадров в секунду).
+      // Раз в секунду — сводка: сколько кадров пришло и содержимое последнего.
+      static unsigned long wsTextWindowStart = 0;
+      static uint32_t wsTextCount = 0;
+      wsTextCount++;
+      if (millis() - wsTextWindowStart > 1000) {
+        Serial.printf("[WebSocket] Кадров за окно: %u, последний (%u байт): %.80s\n",
+                      wsTextCount, (unsigned)length, (const char*)payload);
+        wsTextWindowStart = millis();
+        wsTextCount = 0;
+      }
       break;
+    }
     default:
       break;
   }
+}
+
+// Экранирование строки для безопасной вставки в JSON вручную.
+// Без него кавычка/бэкслеш в имени ключа, SSID или тексте лога ломали JSON.parse
+// на фронтенде — событие молча терялось.
+String jsonEscape(const String& s) {
+  String out;
+  out.reserve(s.length() + 8);
+  for (unsigned int i = 0; i < s.length(); i++) {
+    char c = s[i];
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n";  break;
+      case '\r': out += "\\r";  break;
+      case '\t': out += "\\t";  break;
+      default:
+        if ((unsigned char)c < 0x20) {
+          char buf[7];
+          snprintf(buf, sizeof(buf), "\\u%04x", (unsigned char)c);
+          out += buf;
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
 }
 
 void sendWebSocketEvent(const char* event, const char* data) {
@@ -213,7 +257,7 @@ void sendWebSocketEvent(const char* event, const char* data) {
 }
 
 void sendLog(String message, const char* type = "info") {
-  String logData = "{\"message\":\"" + message + "\",\"type\":\"" + String(type) + "\"}";
+  String logData = "{\"message\":\"" + jsonEscape(message) + "\",\"type\":\"" + jsonEscape(String(type)) + "\"}";
   sendWebSocketEvent("log", logData.c_str());
 }
 
@@ -267,31 +311,41 @@ void handleWiFiConnect() {
   }
   
   JsonDocument doc;
-  deserializeJson(doc, server.arg("plain"));
-  
+  DeserializationError parseErr = deserializeJson(doc, server.arg("plain"));
+  if (parseErr) {
+    server.send(400, "application/json", "{\"success\":false,\"error\":\"Некорректный JSON\"}");
+    return;
+  }
+
   String ssid = doc["ssid"].as<String>();
   String password = doc["password"].as<String>();
-  
-  // Сохраняем учетные данные в состояние системы
-  systemState.wifiSSID = ssid;
-  systemState.wifiPassword = password;
-  
-  // Сохраняем состояние
-  saveSystemState();
-  
+
+  if (ssid.length() == 0) {
+    server.send(400, "application/json", "{\"success\":false,\"error\":\"SSID не задан\"}");
+    return;
+  }
+
   Serial.println("[API] Попытка подключения к WiFi: " + ssid);
-  
+
+  // ВАЖНО: креды НЕ сохраняем до успешного подключения. Иначе пустое/битое тело
+  // или опечатка в пароле безвозвратно затирали рабочую сеть в userdata.
   WiFi.begin(ssid.c_str(), password.c_str());
-  
+
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(500);
     Serial.print(".");
     attempts++;
   }
-  
+
   JsonDocument response;
   if (WiFi.status() == WL_CONNECTED) {
+    // Сохраняем только заведомо рабочие креды
+    systemState.wifiSSID = ssid;
+    systemState.wifiPassword = password;
+    systemState.wifiConnected = true;
+    saveSystemState();
+
     response["success"] = true;
     response["ip"] = WiFi.localIP().toString();
     response["ssid"] = WiFi.SSID();
@@ -300,7 +354,7 @@ void handleWiFiConnect() {
     sendLog("✅ WiFi подключен: " + WiFi.localIP().toString(), "success");
     
     // Отправляем обновление статуса через WebSocket
-    String wifiStatus = "{\"status\":\"connected\",\"ssid\":\"" + WiFi.SSID() + "\",\"rssi\":" + String(WiFi.RSSI()) + ",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
+    String wifiStatus = "{\"status\":\"connected\",\"ssid\":\"" + jsonEscape(WiFi.SSID()) + "\",\"rssi\":" + String(WiFi.RSSI()) + ",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
     sendWebSocketEvent("wifi_status", wifiStatus.c_str());
   } else {
     response["success"] = false;
@@ -372,7 +426,8 @@ String loadFromUserData(const char* key) {
 }
 
 // Сохранение всего состояния системы в раздел userdata
-void saveSystemState() {
+// Возвращает true при успешной записи, false при ошибке (переполнение JSON или сбой NVS).
+bool saveSystemState() {
   JsonDocument doc;
 
   // Сохраняем телефоны
@@ -422,14 +477,57 @@ void saveSystemState() {
   // Сохраняем счётчик открытий
   doc["gateOpenCount"] = systemState.gateOpenCount;
 
+  // Тайминги цикла ворот
+  doc["gateTimings"]["open"] = systemState.gateOpenSec;
+  doc["gateTimings"]["stay"] = systemState.gateStaySec;
+  doc["gateTimings"]["close"] = systemState.gateCloseSec;
+
+  // Защита от потери данных: при нехватке heap ArduinoJson молча пропускает
+  // добавление элементов и serializeJson выдаёт синтаксически валидный, но
+  // НЕПОЛНЫЙ JSON. Записать его поверх единственной копии состояния = потерять
+  // часть ключей/телефонов навсегда. Поэтому при переполнении не пишем.
+  if (doc.overflowed()) {
+    Serial.println("[NVS] ОШИБКА: JSON состояния переполнен (нехватка памяти) — запись отменена, чтобы не потерять данные!");
+    sendLog("❌ Недостаточно памяти для сохранения — данные НЕ перезаписаны", "error");
+    return false;
+  }
+
   String jsonString;
   serializeJson(doc, jsonString);
 
   if (saveToUserData("state", jsonString)) {
     Serial.println("[NVS] Состояние сохранено в userdata (" + String(jsonString.length()) + " байт)");
+    return true;
   } else {
     Serial.println("[NVS] ОШИБКА сохранения в userdata!");
+    return false;
   }
+}
+
+// Троттлинг записи счётчика открытий: полный blob состояния (все ключи/телефоны)
+// писать в NVS на КАЖДОЕ открытие ворот — это износ флеша и блокировка приёмного
+// цикла на время nvs_commit. Инкремент держим в RAM, во флеш сбрасываем не чаще
+// раза в 5 минут (см. также периодический flush в loop()).
+static unsigned long lastGateCountSave = 0;
+static bool gateCountDirty = false;
+static const unsigned long GATE_COUNT_SAVE_INTERVAL_MS = 300000; // 5 минут
+
+void persistGateCountThrottled() {
+  gateCountDirty = true;
+  unsigned long now = millis();
+  if (now - lastGateCountSave >= GATE_COUNT_SAVE_INTERVAL_MS) {
+    if (saveSystemState()) {
+      lastGateCountSave = now;
+      gateCountDirty = false;
+    }
+  }
+}
+
+// Запуск полного цикла ворот с таймингами из настроек (страница «Настройки»)
+void startGateCycle() {
+  GateControl::startCycle((unsigned long)systemState.gateOpenSec * 1000UL,
+                          (unsigned long)systemState.gateStaySec * 1000UL,
+                          (unsigned long)systemState.gateCloseSec * 1000UL);
 }
 
 // Функция сравнения битовых строк с допуском
@@ -627,20 +725,26 @@ bool verifyKeySignal(const ReceivedKey& received, const String& bitString, int b
 
   // Подтверждаем, если достигли требуемого количества повторов
   if (recognition->repeatCount >= recognition->requiredRepeats) {
-    // Удаляем запись
+    // Копируем нужные поля ДО erase: remove_if перемещает элементы вектора,
+    // поэтому указатель recognition стал бы висячим (читал бы чужие данные).
+    uint32_t rCode = recognition->code;
+    String rProtocol = recognition->protocol;
+    int rCount = recognition->repeatCount;
+    int rRequired = recognition->requiredRepeats;
+
     systemState.pendingRecognitions.erase(
       std::remove_if(
         systemState.pendingRecognitions.begin(),
         systemState.pendingRecognitions.end(),
         [&](const KeyRecognition& rec) {
-          return rec.code == recognition->code && rec.protocol == recognition->protocol;
+          return rec.code == rCode && rec.protocol == rProtocol;
         }
       ),
       systemState.pendingRecognitions.end()
     );
 
     Serial.printf("[Verify] ✅ Подтверждено: протокол=%s, повторов=%d (требовалось %d), RSSI=%d dBm\n",
-                  received.protocol.c_str(), recognition->repeatCount, recognition->requiredRepeats, received.rssi);
+                  received.protocol.c_str(), rCount, rRequired, received.rssi);
     return true;
   }
 
@@ -733,10 +837,17 @@ bool isDuplicateForDisplay(const ReceivedKey& key) {
 // Загрузка всего состояния системы из раздела userdata
 void loadSystemState() {
   String jsonString = loadFromUserData("state");
-  
+
   JsonDocument doc;
-  deserializeJson(doc, jsonString);
-  
+  DeserializationError parseErr = deserializeJson(doc, jsonString);
+  if (parseErr && jsonString != "{}") {
+    // Повреждённый blob: не молчим (иначе состояние тихо станет пустым и при
+    // следующей записи затрёт данные). Предупреждаем в Serial; парсинг пустого
+    // doc ниже даст дефолты, существующие ключи в blob не трогаются до записи.
+    Serial.printf("[NVS] ВНИМАНИЕ: не удалось разобрать состояние (%s). Используются значения по умолчанию.\n",
+                  parseErr.c_str());
+  }
+
   // Очищаем текущее состояние
   systemState.phones.clear();
   systemState.keys433.clear();
@@ -807,14 +918,26 @@ void loadSystemState() {
   // Загружаем частоту
   systemState.currentFrequency = doc["frequency"] | 433.92;
 
-  // Загружаем CC1101 настройки
-  systemState.bitRate = doc["bitRate"] | 3.79f;
+  // Загружаем CC1101 настройки. Дефолты соответствуют реальной рабочей
+  // конфигурации init() (20 kbps / 135 кГц / 5.2 / 10 dBm), а не устаревшим 3.79/58.
+  systemState.bitRate = doc["bitRate"] | 20.0f;
   systemState.freqDeviation = doc["freqDeviation"] | 5.2f;
-  systemState.rxBandwidth = doc["rxBandwidth"] | 58.0f;
+  systemState.rxBandwidth = doc["rxBandwidth"] | 135.0f;
   systemState.outputPower = doc["outputPower"] | 10;
+
+  // Миграция: устаревшие сохранённые значения (3.79 kbps / 58 кГц — конфигурация
+  // до перехода на Flipper OOK650) ломают приём. Поднимаем до рабочих, иначе
+  // применение сохранённых настроек в setup() перенастроит радио в нерабочий режим.
+  if (systemState.bitRate < 10.0f)      systemState.bitRate = 20.0f;
+  if (systemState.rxBandwidth < 100.0f) systemState.rxBandwidth = 135.0f;
 
   // Загружаем счётчик открытий
   systemState.gateOpenCount = doc["gateOpenCount"] | 0;
+
+  // Тайминги цикла ворот (дефолты совпадают с фронтендом)
+  systemState.gateOpenSec = doc["gateTimings"]["open"] | 3;
+  systemState.gateStaySec = doc["gateTimings"]["stay"] | 15;
+  systemState.gateCloseSec = doc["gateTimings"]["close"] | 3;
   
   // Принудительно сбрасываем режим обучения при загрузке
   systemState.learningMode = false;
@@ -1065,10 +1188,101 @@ void handleKeyUpdate() {
 void handleGateTrigger() {
   Serial.println("[API] Активация ворот");
   sendLog("⚡ Сигнал на ворота отправлен", "success");
-  GateControl::triggerGatePulse(500);
+  startGateCycle();
   systemState.gateOpenCount++;
-  saveSystemState();
+  persistGateCountThrottled();
   RingLog::append("Ворота активированы (API)");
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+// --- GSM: открытие ворот по звонку/SMS с номеров из systemState.phones ---
+
+// Оставляет в номере только цифры ("+7 (999) 123-45-67" → "79991234567")
+String phoneDigits(const String& number) {
+  String digits;
+  for (size_t i = 0; i < number.length(); i++) {
+    if (isdigit((unsigned char)number[i])) {
+      digits += number[i];
+    }
+  }
+  return digits;
+}
+
+// Сравнение номеров по последним 10 цифрам: форматы +79991234567 / 89991234567 /
+// 79991234567 обозначают один номер и различаются только префиксом
+bool phoneNumbersMatch(const String& a, const String& b) {
+  String da = phoneDigits(a);
+  String db = phoneDigits(b);
+  if (da.length() == 0 || db.length() == 0) return false;
+  if (da.length() >= 10 && db.length() >= 10) {
+    return da.substring(da.length() - 10) == db.substring(db.length() - 10);
+  }
+  return da == db; // короткие номера (сервисные) — только точное совпадение
+}
+
+// Колбэк для GSMManager: доверен ли номер для данного канала (звонок/SMS)
+bool gsmTrustedCheck(const String& number, bool isCall) {
+  for (const auto& phone : systemState.phones) {
+    if (phoneNumbersMatch(phone.number, number)) {
+      return isCall ? phone.callEnabled : phone.smsEnabled;
+    }
+  }
+  return false;
+}
+
+// Колбэк для GSMManager: открытие ворот (зеркалит радио-путь в loop)
+void gsmGateOpen(const String& source) {
+  Serial.println("[GSM] ✅ Активация ворот: " + source);
+  sendLog("🚪 Ворота активированы: " + source, "success");
+  startGateCycle();
+  systemState.gateOpenCount++;
+  persistGateCountThrottled();
+  RingLog::append(("Ворота: " + source).c_str());
+}
+
+// Тайминги цикла ворот: GET — текущие, POST — сохранить (сек)
+void handleGateConfig() {
+  if (server.method() == HTTP_GET) {
+    JsonDocument doc;
+    doc["openDuration"] = systemState.gateOpenSec;
+    doc["stayOpen"] = systemState.gateStaySec;
+    doc["closeDuration"] = systemState.gateCloseSec;
+
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+    return;
+  }
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, server.arg("plain"));
+  if (err) {
+    server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+    return;
+  }
+
+  int openSec = doc["openDuration"] | systemState.gateOpenSec;
+  int staySec = doc["stayOpen"] | systemState.gateStaySec;
+  int closeSec = doc["closeDuration"] | systemState.gateCloseSec;
+
+  // Границы как в UI: движение 1-60 с, пауза «открыто» 1-300 с
+  if (openSec < 1 || openSec > 60 || closeSec < 1 || closeSec > 60 || staySec < 1 || staySec > 300) {
+    server.send(400, "application/json", "{\"error\":\"Values out of range\"}");
+    return;
+  }
+
+  systemState.gateOpenSec = openSec;
+  systemState.gateStaySec = staySec;
+  systemState.gateCloseSec = closeSec;
+
+  if (!saveSystemState()) {
+    server.send(500, "application/json", "{\"error\":\"NVS save failed\"}");
+    return;
+  }
+
+  Serial.printf("[API] Тайминги ворот: открытие %d с, открыто %d с, закрытие %d с\n",
+                openSec, staySec, closeSec);
+  sendLog("⚙️ Тайминги ворот: " + String(openSec) + "/" + String(staySec) + "/" + String(closeSec) + " с", "success");
   server.send(200, "application/json", "{\"success\":true}");
 }
 
@@ -1251,7 +1465,7 @@ void setup() {
   
 
   // Инициализация GateControl
-  GateControl::init(LED_PIN);
+  GateControl::init(GATE_OPEN_PIN, GATE_CLOSE_PIN);
   Serial.println("[OK] GateControl инициализирован");
 
   // Инициализация CC1101
@@ -1268,6 +1482,16 @@ void setup() {
     // Устанавливаем сохраненную/дефолтную частоту
     CC1101Manager::setFrequency(systemState.currentFrequency);
     Serial.println("[OK] Частота установлена: " + String(systemState.currentFrequency) + " МГц");
+
+    // Применяем сохранённые настройки радио к железу. Раньше init() всегда
+    // оставлял хардкод 20/135/5.2, а сохранённые пользователем bitRate/BW/девиация
+    // после перезагрузки игнорировались (приём «молча» возвращался к дефолту).
+    // Значения уже мигрированы в loadSystemState(), поэтому нерабочих не будет.
+    CC1101Manager::setBitRate(systemState.bitRate);
+    CC1101Manager::setRxBandwidth(systemState.rxBandwidth);
+    CC1101Manager::setFrequencyDeviation(systemState.freqDeviation);
+    Serial.printf("[OK] Настройки радио применены: %.2f kbps / %.1f кГц BW / %.1f кГц дев.\n",
+                  systemState.bitRate, systemState.rxBandwidth, systemState.freqDeviation);
     Serial.println("[INFO] Первые 3 секунды сигналы будут игнорироваться (фильтрация начальных артефактов)");
   } else {
     Serial.println("[ERROR] Ошибка инициализации CC1101!");
@@ -1374,6 +1598,7 @@ void setup() {
   server.on("/api/keys/delete", HTTP_POST, handleKeysDelete);
   server.on("/api/keys/update", HTTP_PUT, handleKeyUpdate);
   server.on("/api/gate/trigger", HTTP_POST, handleGateTrigger);
+  server.on("/api/gate/config", handleGateConfig);
   server.on("/api/frequency", HTTP_GET, handleFrequencyGet);
   server.on("/api/frequency/set", HTTP_POST, handleFrequencySet);
   server.on("/api/cc1101/config", HTTP_GET, handleCC1101Config);
@@ -1384,10 +1609,11 @@ void setup() {
   server.begin();
   Serial.println("[OK] Веб-сервер запущен на порту 80");
 
-  // Инициализация GSMManager (опционально)
-  // Раскомментируйте, когда GSM модуль будет подключен
-  // GSMManager::init(&modem, GSM_TX_PIN, GSM_RX_PIN);
-  // Serial.println("[OK] GSM модуль инициализирован");
+  // Инициализация GSM (SIM800L на UART2): открытие ворот по звонку/SMS
+  // с номеров из белого списка (страница «Телефоны»). Если модуль не подключён —
+  // ищется в фоне, остальная система работает как обычно.
+  GSMManager::init(GSM_RX_PIN, GSM_TX_PIN, gsmTrustedCheck, gsmGateOpen);
+  Serial.println("[OK] GSM модуль: поиск SIM800L запущен");
   
   Serial.println("=================================");
   Serial.println("Инициализация завершена!");
@@ -1408,20 +1634,30 @@ void setup() {
 void loop() {
   // Обработка веб-запросов
   server.handleClient();
-  
+
   // Обработка WebSocket
   webSocket.loop();
-  
+
+  // Неблокирующее обслуживание импульса ворот (выключение реле по таймеру)
+  GateControl::update();
+
+  // Периодический сброс счётчика открытий во флеш (см. persistGateCountThrottled)
+  static unsigned long lastGateCountFlush = 0;
+  if (gateCountDirty && millis() - lastGateCountFlush > GATE_COUNT_SAVE_INTERVAL_MS) {
+    lastGateCountFlush = millis();
+    if (saveSystemState()) { gateCountDirty = false; lastGateCountSave = millis(); }
+  }
+
   // Периодическая отправка статуса WiFi и переподключение (каждые 5 секунд)
   static unsigned long lastWiFiUpdate = 0;
   static bool wasConnected = false;
-  
+
   if (millis() - lastWiFiUpdate > 5000) {
     lastWiFiUpdate = millis();
-    
+
     if (WiFi.status() == WL_CONNECTED) {
       // Отправляем статус подключения
-      String wifiStatus = "{\"status\":\"connected\",\"ssid\":\"" + WiFi.SSID() + "\",\"rssi\":" + String(WiFi.RSSI()) + ",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
+      String wifiStatus = "{\"status\":\"connected\",\"ssid\":\"" + jsonEscape(WiFi.SSID()) + "\",\"rssi\":" + String(WiFi.RSSI()) + ",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
       sendWebSocketEvent("wifi_status", wifiStatus.c_str());
       
       if (!wasConnected) {
@@ -1429,14 +1665,19 @@ void loop() {
         Serial.println("[WiFi] Успешное подключение к: " + WiFi.SSID());
       }
     } else {
-      // Если было подключение, пытаемся переподключиться
+      // Если было подключение, пытаемся переподключиться — но не чаще раза в 30с.
+      // Вызов WiFi.begin() каждые 5с перезапускал ассоциацию, не давая ей завершиться.
+      static unsigned long lastReconnectAttempt = 0;
       if (systemState.wifiSSID.length() > 0) {
         if (wasConnected) {
           Serial.println("[WiFi] Соединение потеряно, попытка переподключения к: " + systemState.wifiSSID);
           sendLog("⚠️ WiFi отключен, переподключение к " + systemState.wifiSSID + "...", "warning");
           wasConnected = false;
         }
-        WiFi.begin(systemState.wifiSSID.c_str(), systemState.wifiPassword.c_str());
+        if (millis() - lastReconnectAttempt > 30000) {
+          lastReconnectAttempt = millis();
+          WiFi.begin(systemState.wifiSSID.c_str(), systemState.wifiPassword.c_str());
+        }
       }
       
       // Отправляем статус отключения
@@ -1521,25 +1762,29 @@ void loop() {
           newKey.timestamp = receivedKey.timestamp;
           
           systemState.keys433.push_back(newKey);
-          
+
           // Выключаем режим обучения
           systemState.learningMode = false;
-          
-          // Сохраняем состояние
-          saveSystemState();
-          
+
+          // Сохраняем состояние; при сбое NVS честно сообщаем в UI, а не рапортуем успех
+          bool saved = saveSystemState();
+
           Serial.println("[CC1101] ✅ Новый ключ добавлен: " + newKey.name);
-          Serial.printf("[CC1101] Протокол: %s, Бит: %d, TE: %.1f мкс\n", 
+          Serial.printf("[CC1101] Протокол: %s, Бит: %d, TE: %.1f мкс\n",
                        newKey.protocol.c_str(), newKey.bitLength, newKey.te);
-          sendLog("🔑 Новый ключ добавлен: " + newKey.name, "success");
+          if (saved) {
+            sendLog("🔑 Новый ключ добавлен: " + newKey.name, "success");
+          } else {
+            sendLog("⚠️ Ключ добавлен в память, но НЕ сохранён (ошибка NVS) — после перезагрузки пропадёт", "error");
+          }
           
           // Отправляем событие о добавлении ключа
-          String keyData = "{\"code\":" + String(receivedKey.code) + 
-                          ",\"name\":\"" + newKey.name + "\"" +
+          String keyData = "{\"code\":" + String(receivedKey.code) +
+                          ",\"name\":\"" + jsonEscape(newKey.name) + "\"" +
                           ",\"enabled\":" + String(newKey.enabled) +
-                          ",\"protocol\":\"" + newKey.protocol + "\"" +
+                          ",\"protocol\":\"" + jsonEscape(newKey.protocol) + "\"" +
                           ",\"bitLength\":" + String(newKey.bitLength) +
-                          ",\"rawData\":\"" + newKey.rawData + "\"" +
+                          ",\"rawData\":\"" + jsonEscape(newKey.rawData) + "\"" +
                           ",\"rssi\":" + String(newKey.rssi) +
                           ",\"frequency\":" + String(newKey.frequency) +
                           ",\"modulation\":\"" + newKey.modulation + "\"" +
@@ -1547,14 +1792,14 @@ void loop() {
           sendWebSocketEvent("key_added", keyData.c_str());
 
           String learnEvent = "{\"code\":" + String(receivedKey.code) +
-                               ",\"rawData\":\"" + receivedKey.rawData + "\"" +
-                               ",\"bitString\":\"" + receivedKey.bitString + "\"" +
+                               ",\"rawData\":\"" + jsonEscape(receivedKey.rawData) + "\"" +
+                               ",\"bitString\":\"" + jsonEscape(receivedKey.bitString) + "\"" +
                                ",\"bitLength\":" + String(receivedKey.bitLength) +
                                ",\"rssi\":" + String(receivedKey.rssi) +
                                ",\"snr\":" + String(receivedKey.snr) +
                                ",\"frequency\":" + String(CC1101Manager::getFrequency()) +
-                               ",\"protocol\":\"" + receivedKey.protocol + "\"" +
-                               ",\"modulation\":\"" + receivedKey.modulation + "\"" +
+                               ",\"protocol\":\"" + jsonEscape(receivedKey.protocol) + "\"" +
+                               ",\"modulation\":\"" + jsonEscape(receivedKey.modulation) + "\"" +
                                ",\"timestamp\":" + String(receivedKey.timestamp) +
                                ",\"hash\":" + String(receivedKey.hash) + "}";
           sendWebSocketEvent("key_received", learnEvent.c_str());
@@ -1564,14 +1809,14 @@ void loop() {
           saveSystemState();
           sendLog("⚠️ Ключ уже существует: " + existingKey->name, "warning");
           String learnEvent = "{\"code\":" + String(receivedKey.code) +
-                               ",\"rawData\":\"" + receivedKey.rawData + "\"" +
-                               ",\"bitString\":\"" + receivedKey.bitString + "\"" +
+                               ",\"rawData\":\"" + jsonEscape(receivedKey.rawData) + "\"" +
+                               ",\"bitString\":\"" + jsonEscape(receivedKey.bitString) + "\"" +
                                ",\"bitLength\":" + String(receivedKey.bitLength) +
                                ",\"rssi\":" + String(receivedKey.rssi) +
                                ",\"snr\":" + String(receivedKey.snr) +
                                ",\"frequency\":" + String(CC1101Manager::getFrequency()) +
-                               ",\"protocol\":\"" + receivedKey.protocol + "\"" +
-                               ",\"modulation\":\"" + receivedKey.modulation + "\"" +
+                               ",\"protocol\":\"" + jsonEscape(receivedKey.protocol) + "\"" +
+                               ",\"modulation\":\"" + jsonEscape(receivedKey.modulation) + "\"" +
                                ",\"timestamp\":" + String(receivedKey.timestamp) +
                                ",\"hash\":" + String(receivedKey.hash) + "}";
           sendWebSocketEvent("key_received", learnEvent.c_str());
@@ -1595,9 +1840,9 @@ void loop() {
             logMessage = "🚪 Ворота активированы: " + existingKey->name;
             logType = "success";
             hasLogMessage = true;
-            GateControl::triggerGatePulse();
+            startGateCycle();
             systemState.gateOpenCount++;
-            saveSystemState();
+            persistGateCountThrottled();
             RingLog::append(("Ворота: " + existingKey->name + " RSSI:" + String(receivedKey.rssi)).c_str());
           } else {
             serialMessage = "[CC1101] ⚠️ Ключ отключен: " + existingKey->name;
@@ -1637,15 +1882,15 @@ void loop() {
         }
 
         if (!suppressDuplicate && sendEventToUI) {
-          String keyData = "{\"code\":" + String(receivedKey.code) + 
-                           ",\"rawData\":\"" + receivedKey.rawData + "\"" +
-                           ",\"bitString\":\"" + receivedKey.bitString + "\"" +
+          String keyData = "{\"code\":" + String(receivedKey.code) +
+                           ",\"rawData\":\"" + jsonEscape(receivedKey.rawData) + "\"" +
+                           ",\"bitString\":\"" + jsonEscape(receivedKey.bitString) + "\"" +
                            ",\"bitLength\":" + String(receivedKey.bitLength) +
                            ",\"rssi\":" + String(receivedKey.rssi) +
                            ",\"snr\":" + String(receivedKey.snr) +
                            ",\"frequency\":" + String(CC1101Manager::getFrequency()) +
-                           ",\"protocol\":\"" + receivedKey.protocol + "\"" +
-                           ",\"modulation\":\"" + receivedKey.modulation + "\"" +
+                           ",\"protocol\":\"" + jsonEscape(receivedKey.protocol) + "\"" +
+                           ",\"modulation\":\"" + jsonEscape(receivedKey.modulation) + "\"" +
                            ",\"timestamp\":" + String(receivedKey.timestamp) +
                            ",\"hash\":" + String(receivedKey.hash) + "}";
           sendWebSocketEvent("key_received", keyData.c_str());
@@ -1664,7 +1909,6 @@ void loop() {
     Serial.println("[CC1101] Диагностика - RSSI: " + String(rssi) + " dBm, Частота: " + String(CC1101Manager::getFrequency()) + " МГц");
   }
 
-  // Обработка GSM (опционально)
-  // Раскомментируйте, когда GSM модуль будет подключен
-  // GSMManager::handleGSM();
+  // Обработка GSM: инициализация SIM800L, входящие звонки (+CLIP) и SMS (+CMT)
+  GSMManager::handleGSM();
 }
