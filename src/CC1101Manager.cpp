@@ -47,6 +47,10 @@ namespace {
     constexpr int MIN_SIGNAL_LENGTH = 40; // Минимум переходов для валидного сигнала
     constexpr int MIN_RAW_SIGNAL_LENGTH = 40; // Минимум переходов для RAW сигнала
     constexpr float MIN_PATTERN_CONFIDENCE = 0.5f; // Минимум уверенности в наличии паттерна (50% импульсов должны группироваться)
+    // Логировать сырые/нераспознанные сигналы (RAW/Unknown) и служебные строки
+    // приёма. По умолчанию false — иначе лог захлёбывается шумом эфира.
+    // Декодированные протоколы (Keeloq/CAME/Nice/…) логируются всегда.
+    constexpr bool LOG_RAW_SIGNALS = false;
 }
 
 // Статические переменные
@@ -66,6 +70,10 @@ volatile bool CC1101Manager::rawSignalReady = false;
 volatile unsigned long CC1101Manager::interruptCounter = 0;
 volatile bool CC1101Manager::firstEdgeCaptured = false;
 volatile bool CC1101Manager::lastSignalLevel = false;
+// Флаг «слить следующий импульс того же уровня»: выставляется при склейке
+// короткого спайка, чтобы продолжение прерванного импульса не сохранялось
+// отдельной записью (иначе один LOW дробится на два → ломает CAME и др.).
+static volatile bool pendingGlueMerge = false;
 unsigned long CC1101Manager::lastDetectionTime = 0;
 uint32_t CC1101Manager::lastDetectionHash = 0;
 uint32_t CC1101Manager::lastDetectionCode = 0;
@@ -103,8 +111,23 @@ bool CC1101Manager::configureForRawMode() {
     // Включаем "промискуитет" — отключаем фильтры пакетов
     cc->setPromiscuousMode(true);
 
-    // Выключаем CRC, автоперезапись — доступно через API setPacketMode?
-    // Радиолиб автоматически выставит нужные параметры при receiveDirect(false).
+    // === AGC-пресет Flipper OOK650 (борьба с шумовым флудом) ===
+    // RadioLib::config() НЕ трогает регистры AGC — они остаются в сбросовых
+    // дефолтах (AGCCTRL2=0x03 → MAIN_TARGET 24 dB). В async-OOK это заставляет
+    // приёмник задирать усиление в паузах и слайсить собственный шум как «сигнал»
+    // (замер: ~114 ложных RAW-буферов за 8 с без передачи, RSSI-гейт бесполезен).
+    // Flipper для OOK650 ставит MAGN_TARGET 42 dB и ADC_RETENTION — это глушит
+    // шумовой фон, оставляя реальные брелоки. BW/битрейт НЕ трогаем (настроены
+    // под декодеры: 20 kbps / 135 кГц). Значения — из furi_hal_subghz_configs.h.
+    CC1101Ex* ex = static_cast<CC1101Ex*>(cc);
+    // FIFOTHR: важен бит ADC_RETENTION (0x07) — чувствительность OOK при BW>100кГц
+    ex->writeReg(RADIOLIB_CC1101_REG_FIFOTHR,  0x07);
+    // MAGN_TARGET 42 dB (для RX BW > 100 кГц — наш случай 135 кГц)
+    ex->writeReg(RADIOLIB_CC1101_REG_AGCCTRL2, 0x07);
+    ex->writeReg(RADIOLIB_CC1101_REG_AGCCTRL1, 0x00);
+    // Средний гистерезис/мёртвая зона, 16 сэмплов AGC, граница 8 dB
+    ex->writeReg(RADIOLIB_CC1101_REG_AGCCTRL0, 0x91);
+    Serial.println("[CC1101] AGC-пресет OOK650 применён (шумовой фон подавлен)");
 
     return true;
 }
@@ -147,6 +170,7 @@ void CC1101Manager::resetRawBuffer() {
     firstEdgeCaptured = false;
     receivedFlag = false;
     lastSignalLevel = false;
+    pendingGlueMerge = false;
 }
 
 bool CC1101Manager::signalLooksValid(int pulseCount) {
@@ -872,7 +896,7 @@ bool CC1101Manager::checkReceived() {
     int decodedBitLength = 0;
     float decodedTe = 0;
 
-    Serial.printf("[CC1101] Буфер: %d импульсов\n", signalLength);
+    if (LOG_RAW_SIGNALS) Serial.printf("[CC1101] Буфер: %d импульсов\n", signalLength);
     // (Nero Radio преамбула может быть в одном буфере, данные в следующем)
     for (int i = 0; i < signalLength; i++) {
         ::DecoderResult dr = multiDecoder.feed(rawSignalLevels[i], rawSignalTimings[i]);
@@ -1052,7 +1076,7 @@ bool CC1101Manager::checkReceived() {
         }
         if (signalLength > 10) transitionsStr += "...";
         
-        Serial.printf("[CC1101] 🔍 RAW сигнал: переходов=%d, TE=%.1f мкс, первые переходы: %s\n", 
+        if (LOG_RAW_SIGNALS) Serial.printf("[CC1101] 🔍 RAW сигнал: переходов=%d, TE=%.1f мкс, первые переходы: %s\n",
                       signalLength, estimatedTe, transitionsStr.c_str());
         
         // Создаем RAW представление из таймингов (ограничиваем размер)
@@ -1068,7 +1092,7 @@ bool CC1101Manager::checkReceived() {
         // Используем хеш как код для RAW сигнала
         decodedCode = computeHash(rawSignalTimings, signalLength) & 0xFFFFFFFF;
         
-        Serial.println("[CC1101] ⚠️ Протокол не определен, сохранены RAW данные. 💡 Для отладки: пришлите эти данные вместе с данными из Flipper Zero");
+        if (LOG_RAW_SIGNALS) Serial.println("[CC1101] ⚠️ Протокол не определен, сохранены RAW данные. 💡 Для отладки: пришлите эти данные вместе с данными из Flipper Zero");
     }
 
     uint32_t currentHash = computeHash(rawSignalTimings, signalLength);
@@ -1173,7 +1197,8 @@ bool CC1101Manager::checkReceived() {
     if (skippedDuplicates > 0) {
         signalInfo = String(" | Пропущено повторов: ") + String(skippedDuplicates);
     }
-    Serial.printf("[CC1101] 📡 Сигнал: переходов=%d, TE=%.1f мкс%s\n", signalLength, estimatedTe, signalInfo.c_str());
+    if (protocolName != "RAW/Unknown" || LOG_RAW_SIGNALS)
+        Serial.printf("[CC1101] 📡 Сигнал: переходов=%d, TE=%.1f мкс%s\n", signalLength, estimatedTe, signalInfo.c_str());
     
     // Универсальная обработка для всех протоколов
     // Специальные проверки для конкретных ключей могут быть добавлены здесь, но они не влияют на определение протокола
@@ -1254,8 +1279,11 @@ bool CC1101Manager::checkReceived() {
         displayData = displayData.substring(0, 27) + "...";
     }
     
-    // Для длинных протоколов показываем дополнительную информацию
-    if (protocolName == "Keeloq" || protocolName == "Keeloq64") {
+    // Для длинных протоколов показываем дополнительную информацию.
+    // RAW/Unknown не логируем — это шум эфира (см. LOG_RAW_SIGNALS).
+    if (protocolName == "RAW/Unknown" && !LOG_RAW_SIGNALS) {
+        // тихо — ничего не печатаем
+    } else if (protocolName == "Keeloq" || protocolName == "Keeloq64") {
         // Keeloq - 64-битный протокол
         String bitDisplay = bitSequence.length() > 70 ? (bitSequence.substring(0, 70) + "...") : bitSequence;
         Serial.printf("[CC1101] 🔑 Ключ: %s (64-bit) | Код: %lu (0x%s) | Битовая строка: %s | RSSI: %d dBm | TE: %.0f мкс | Частота: %.2f МГц\n",
@@ -1306,7 +1334,7 @@ void CC1101Manager::resetReceived() {
 
     // Заново вооружаем приём — без этого устройство переставало принимать брелоки.
     attachRawInterrupt();
-    Serial.println("[CC1101] Буфер приема очищен");
+    if (LOG_RAW_SIGNALS) Serial.println("[CC1101] Буфер приема очищен");
 }
 
 // Получить RSSI
@@ -1321,12 +1349,13 @@ bool CC1101Manager::setBitRate(float br) {
     if (radio == nullptr) return false;
     CC1101* cc = (CC1101*)radio;
     int state = cc->setBitRate(br);
-    
+
     if (state == RADIOLIB_ERR_NONE) {
         Serial.print("[CC1101] Битрейт установлен: ");
         Serial.print(br);
         Serial.println(" kbps");
-        return true;
+        // RadioLib шлёт CMD_IDLE и выбивает чип из RX — обязательно перезапускаем приём
+        return enterRawReceive();
     }
     return false;
 }
@@ -1336,12 +1365,13 @@ bool CC1101Manager::setFrequencyDeviation(float freqDev) {
     if (radio == nullptr) return false;
     CC1101* cc = (CC1101*)radio;
     int state = cc->setFrequencyDeviation(freqDev);
-    
+
     if (state == RADIOLIB_ERR_NONE) {
         Serial.print("[CC1101] Девиация частоты установлена: ");
         Serial.print(freqDev);
         Serial.println(" кГц");
-        return true;
+        // RadioLib шлёт CMD_IDLE и выбивает чип из RX — обязательно перезапускаем приём
+        return enterRawReceive();
     }
     return false;
 }
@@ -1351,12 +1381,13 @@ bool CC1101Manager::setRxBandwidth(float rxBw) {
     if (radio == nullptr) return false;
     CC1101* cc = (CC1101*)radio;
     int state = cc->setRxBandwidth(rxBw);
-    
+
     if (state == RADIOLIB_ERR_NONE) {
         Serial.print("[CC1101] Ширина полосы RX установлена: ");
         Serial.print(rxBw);
         Serial.println(" кГц");
-        return true;
+        // RadioLib шлёт CMD_IDLE и выбивает чип из RX — обязательно перезапускаем приём
+        return enterRawReceive();
     }
     return false;
 }
@@ -1388,7 +1419,7 @@ bool CC1101Manager::init(int csPin, int gdo0Pin, int gdo2Pin) {
     gdo0PinNumber = gdo0Pin;
 
     Module* mod = new Module(csPin, gdo0Pin, RADIOLIB_NC, gdo2Pin);
-    radio = new CC1101(mod);
+    radio = new CC1101Ex(mod); // CC1101Ex — доступ к записи регистров (AGC-пресет)
     CC1101* cc = static_cast<CC1101*>(radio);
 
     Serial.print("[CC1101] Настройка на частоту ");
@@ -1557,18 +1588,25 @@ void IRAM_ATTR CC1101Manager::onInterrupt() {
     lastInterruptTime = now;
     interruptCounter++;
 
-    // Склеиваем очень короткие импульсы (шум)
+    // Склеиваем очень короткие импульсы (шум).
+    // Спайк < 40 мкс — паразитный переход посреди длинного импульса. Добавляем его
+    // длительность к предыдущей записи И помечаем, что СЛЕДУЮЩИЙ импульс того же
+    // уровня — это продолжение прерванного, его надо слить, а не писать отдельно.
+    // Без этого один LOW разбивался на два (напр. 540L + 310L) и state-machine
+    // CAME/Nice сбрасывался на мнимом «два LOW подряд».
     if (delta < GLUE_THRESHOLD_US) {
         if (rawSignalIndex > 0) {
             rawSignalTimings[rawSignalIndex - 1] += delta;
         }
         lastSignalLevel = level;
+        pendingGlueMerge = true;
         return;
     }
 
     // Слишком короткие импульсы — шум, пропускаем
     if (delta < MIN_PULSE_US) {
         lastSignalLevel = level;
+        pendingGlueMerge = false;
         return;
     }
 
@@ -1584,11 +1622,18 @@ void IRAM_ATTR CC1101Manager::onInterrupt() {
             firstEdgeCaptured = false;
         }
         lastSignalLevel = level;
+        pendingGlueMerge = false;
         return;
     }
 
     // Линейный буфер
-    if (rawSignalIndex < MAX_RAW_SIGNAL_LENGTH - 1) {
+    if (pendingGlueMerge && rawSignalIndex > 0 &&
+        lastSignalLevel == rawSignalLevels[rawSignalIndex - 1]) {
+        // Продолжение импульса, прерванного спайком — сливаем в ту же запись
+        rawSignalTimings[rawSignalIndex - 1] += delta;
+        pendingGlueMerge = false;
+    } else if (rawSignalIndex < MAX_RAW_SIGNAL_LENGTH - 1) {
+        pendingGlueMerge = false;
         rawSignalTimings[rawSignalIndex] = delta;
         rawSignalLevels[rawSignalIndex] = lastSignalLevel;
         rawSignalIndex++;

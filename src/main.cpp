@@ -925,9 +925,7 @@ void loadSystemState() {
   systemState.rxBandwidth = doc["rxBandwidth"] | 135.0f;
   systemState.outputPower = doc["outputPower"] | 10;
 
-  // Миграция: устаревшие сохранённые значения (3.79 kbps / 58 кГц — конфигурация
-  // до перехода на Flipper OOK650) ломают приём. Поднимаем до рабочих, иначе
-  // применение сохранённых настроек в setup() перенастроит радио в нерабочий режим.
+  // Миграция: устаревшие сохранённые значения (3.79 kbps / 58 кГц) ломают приём.
   if (systemState.bitRate < 10.0f)      systemState.bitRate = 20.0f;
   if (systemState.rxBandwidth < 100.0f) systemState.rxBandwidth = 135.0f;
 
@@ -1724,15 +1722,8 @@ void loop() {
         // В режиме обучения принимаем ТОЛЬКО декодированные протоколы,
         // RAW/Unknown — это шум эфира, не сохраняем
         if (receivedKey.protocol == "RAW/Unknown" || receivedKey.protocol == "RAW/Custom") {
-          Serial.printf("[CC1101] Обучение: пропускаем шум (%s, RSSI: %d)\n",
-                        receivedKey.protocol.c_str(), receivedKey.rssi);
-          // Отправляем в UI как сигнал (для спектрограммы), но не сохраняем
-          String keyData = "{\"code\":" + String(receivedKey.code) +
-                           ",\"rssi\":" + String(receivedKey.rssi) +
-                           ",\"protocol\":\"" + receivedKey.protocol + "\"" +
-                           ",\"bitLength\":" + String(receivedKey.bitLength) +
-                           ",\"frequency\":" + String(CC1101Manager::getFrequency()) + "}";
-          sendWebSocketEvent("key_received", keyData.c_str());
+          // RAW/Unknown — шум эфира: НЕ логируем в Serial и НЕ шлём в UI-журнал
+          // (иначе журнал захлёбывается шумом). Просто игнорируем.
           CC1101Manager::resetReceived();
           return; // Выходим из loop(), обработаем следующий сигнал на следующей итерации
         }
@@ -1852,11 +1843,15 @@ void loop() {
             hasLogMessage = true;
           }
         } else {
-          // Неизвестный ключ — логируем только в Serial, не спамим WebSocket
-          serialMessage = "[CC1101] ❓ Неизвестный ключ: " + receivedKey.protocol +
-                          " 0x" + String(receivedKey.code, HEX) +
-                          " (RSSI: " + String(receivedKey.rssi) + " dBm)";
-          hasSerialMessage = true;
+          // Неизвестный ключ — логируем только в Serial, не спамим WebSocket.
+          // RAW/Unknown (шум эфира) не логируем вовсе — только реально
+          // декодированные, но отсутствующие в базе протоколы.
+          if (receivedKey.protocol != "RAW/Unknown" && receivedKey.protocol != "RAW/Custom") {
+            serialMessage = "[CC1101] ❓ Неизвестный ключ: " + receivedKey.protocol +
+                            " 0x" + String(receivedKey.code, HEX) +
+                            " (RSSI: " + String(receivedKey.rssi) + " dBm)";
+            hasSerialMessage = true;
+          }
           hasLogMessage = false;
         }
 
@@ -1881,7 +1876,9 @@ void loop() {
           sendLog(logMessage, logType);
         }
 
-        if (!suppressDuplicate && sendEventToUI) {
+        // RAW/Unknown (шум эфира) в UI-журнал не шлём — только реально декодированные
+        bool isRawNoise = (receivedKey.protocol == "RAW/Unknown" || receivedKey.protocol == "RAW/Custom");
+        if (!suppressDuplicate && sendEventToUI && !isRawNoise) {
           String keyData = "{\"code\":" + String(receivedKey.code) +
                            ",\"rawData\":\"" + jsonEscape(receivedKey.rawData) + "\"" +
                            ",\"bitString\":\"" + jsonEscape(receivedKey.bitString) + "\"" +
