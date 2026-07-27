@@ -6,6 +6,7 @@
 #include <SPIFFS.h>
 #include <ESPmDNS.h>
 #include <WebSocketsServer.h>
+#include <Update.h>
 #include <algorithm>
 #include <vector>
 #include <nvs_flash.h>
@@ -528,6 +529,23 @@ void startGateCycle() {
   GateControl::startCycle((unsigned long)systemState.gateOpenSec * 1000UL,
                           (unsigned long)systemState.gateStaySec * 1000UL,
                           (unsigned long)systemState.gateCloseSec * 1000UL);
+}
+
+// Текущая фаза цикла ворот в JSON (для события gate_status и /api/gate/status)
+String gateStatusJson() {
+  return String("{\"phase\":\"") + GateControl::phaseName() +
+         "\",\"next\":\"" + GateControl::nextDirName() +
+         "\",\"position\":" + String(GateControl::positionNow(), 2) + "}";
+}
+
+// Рассылка реальной фазы ворот в UI при каждой её смене (вызывается из loop)
+void broadcastGateStatus() {
+  static const char* lastPhase = nullptr;
+  const char* current = GateControl::phaseName(); // строковые литералы — сравнение по указателю корректно
+  if (current != lastPhase) {
+    lastPhase = current;
+    sendWebSocketEvent("gate_status", gateStatusJson().c_str());
+  }
 }
 
 // Функция сравнения битовых строк с допуском
@@ -1193,6 +1211,61 @@ void handleGateTrigger() {
   server.send(200, "application/json", "{\"success\":true}");
 }
 
+// Текущее состояние цикла ворот (инициализация UI при загрузке/реконнекте)
+void handleGateStatus() {
+  server.send(200, "application/json", gateStatusJson());
+}
+
+// --- OTA: обновление прошивки и SPIFFS из веб-интерфейса ---
+// Прошивка пишется в неактивный OTA-слот; переключение — только после
+// успешного Update.end(). userdata (ключи/телефоны) не затрагивается.
+
+// Финальный ответ клиенту после приёма файла; при успехе — перезагрузка
+void handleOTAFinish() {
+  bool ok = !Update.hasError();
+  server.sendHeader("Connection", "close");
+  if (ok) {
+    server.send(200, "application/json", "{\"success\":true}");
+    sendLog("✅ OTA завершено, перезагрузка...", "success");
+    delay(500);
+    ESP.restart();
+  } else {
+    server.send(500, "application/json",
+                "{\"error\":\"" + jsonEscape(Update.errorString()) + "\"}");
+  }
+}
+
+// Потоковый приём файла обновления (общий для прошивки и SPIFFS)
+void handleOTAUpload() {
+  HTTPUpload& up = server.upload();
+
+  if (up.status == UPLOAD_FILE_START) {
+    int cmd = server.uri().endsWith("/spiffs") ? U_SPIFFS : U_FLASH;
+    if (cmd == U_SPIFFS) SPIFFS.end(); // раздел будет перезаписан целиком
+    sendLog(String("⬆️ OTA: приём ") +
+            (cmd == U_SPIFFS ? "образа интерфейса" : "прошивки") +
+            " (" + up.filename + ")...", "info");
+    // Размер заранее неизвестен — Update сам ограничит размером раздела
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
+      sendLog("❌ OTA: " + String(Update.errorString()), "error");
+    }
+  } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (!Update.hasError() &&
+        Update.write(up.buf, up.currentSize) != up.currentSize) {
+      sendLog("❌ OTA запись: " + String(Update.errorString()), "error");
+    }
+  } else if (up.status == UPLOAD_FILE_END) {
+    if (Update.end(true)) {
+      sendLog("OTA: принято " + String(up.totalSize) + " байт", "success");
+    } else {
+      sendLog("❌ OTA: " + String(Update.errorString()), "error");
+    }
+  } else if (up.status == UPLOAD_FILE_ABORTED) {
+    Update.abort();
+    sendLog("❌ OTA прервано клиентом", "error");
+  }
+}
+
 // --- GSM: открытие ворот по звонку/SMS с номеров из systemState.phones ---
 
 // Оставляет в номере только цифры ("+7 (999) 123-45-67" → "79991234567")
@@ -1596,6 +1669,9 @@ void setup() {
   server.on("/api/keys/delete", HTTP_POST, handleKeysDelete);
   server.on("/api/keys/update", HTTP_PUT, handleKeyUpdate);
   server.on("/api/gate/trigger", HTTP_POST, handleGateTrigger);
+  server.on("/api/gate/status", HTTP_GET, handleGateStatus);
+  server.on("/api/ota/firmware", HTTP_POST, handleOTAFinish, handleOTAUpload);
+  server.on("/api/ota/spiffs", HTTP_POST, handleOTAFinish, handleOTAUpload);
   server.on("/api/gate/config", handleGateConfig);
   server.on("/api/frequency", HTTP_GET, handleFrequencyGet);
   server.on("/api/frequency/set", HTTP_POST, handleFrequencySet);
@@ -1638,6 +1714,7 @@ void loop() {
 
   // Неблокирующее обслуживание импульса ворот (выключение реле по таймеру)
   GateControl::update();
+  broadcastGateStatus();
 
   // Периодический сброс счётчика открытий во флеш (см. persistGateCountThrottled)
   static unsigned long lastGateCountFlush = 0;

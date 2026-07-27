@@ -72,7 +72,7 @@ export interface AppContextValue {
   addLog: (message: string, type?: LogEntry['type']) => void;
   subscribe: (event: string, handler: WsEventHandler) => () => void;
   connected: boolean;
-  gateStatus: 'closed' | 'opening' | 'open' | 'closing';
+  gateStatus: 'closed' | 'opening' | 'open' | 'closing' | 'stopped';
   gateTimings: GateTimings;
   setGateTimings: (t: GateTimings) => void;
   systemInfo: SystemInfo;
@@ -102,7 +102,7 @@ export const AppContext = createContext<AppContextValue>({
 export const useApp = () => useContext(AppContext);
 
 // --- Constants ---
-const BASE_URL = window.location.hostname === 'localhost'
+export const BASE_URL = window.location.hostname === 'localhost'
   ? 'http://192.168.4.1'
   : `http://${window.location.hostname}`;
 
@@ -150,11 +150,12 @@ const TOAST_ICONS: Record<ToastType, React.ReactNode> = {
   info: <IconInfo size={16} />,
 };
 
-const GATE_STATUS_TEXT: Record<'closed' | 'opening' | 'open' | 'closing', string> = {
+const GATE_STATUS_TEXT: Record<'closed' | 'opening' | 'open' | 'closing' | 'stopped', string> = {
   closed: 'Закрыто',
   opening: 'Открытие...',
   open: 'Открыто',
   closing: 'Закрытие...',
+  stopped: 'Остановлено',
 };
 
 // --- App ---
@@ -168,7 +169,9 @@ function App() {
   const [currentPage, setCurrentPage] = useState<Page>('home');
   const [notification, setNotification] = useState<{ msg: string; type: ToastType } | null>(null);
   const [gateTriggering, setGateTriggering] = useState(false);
-  const [gateStatus, setGateStatus] = useState<'closed' | 'opening' | 'open' | 'closing'>('closed');
+  const [gateStatus, setGateStatus] = useState<'closed' | 'opening' | 'open' | 'closing' | 'stopped'>('closed');
+  const [gateNext, setGateNext] = useState<'open' | 'close'>('open');
+  const [gatePos, setGatePos] = useState(0); // позиция створки 0..1 с прошивки
   const [gateTimings, setGateTimingsState] = useState<GateTimings>(loadGateTimings);
   const [lastOpenTime, setLastOpenTime] = useState(0);
   const [sessionOpenCount, setSessionOpenCount] = useState(0);
@@ -184,33 +187,23 @@ function App() {
   const subscribersRef = useRef<Map<string, Set<WsEventHandler>>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
   const notificationTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const gateTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const gateTimingsRef = useRef(gateTimings);
-  useEffect(() => { gateTimingsRef.current = gateTimings; }, [gateTimings]);
-
-  // --- Gate status cycle ---
-  const startGateCycle = useCallback(() => {
-    if (gateTimerRef.current) clearTimeout(gateTimerRef.current);
-    const t = gateTimingsRef.current;
-
-    setLastOpenTime(Date.now());
-    setSessionOpenCount(prev => prev + 1);
-    setGateStatus('opening');
-    gateTimerRef.current = setTimeout(() => {
-      setGateStatus('open');
-      gateTimerRef.current = setTimeout(() => {
-        setGateStatus('closing');
-        gateTimerRef.current = setTimeout(() => {
-          setGateStatus('closed');
-          gateTimerRef.current = null;
-        }, t.closeDuration * 1000);
-      }, t.stayOpen * 1000);
-    }, t.openDuration * 1000);
-  }, []);
-
-  useEffect(() => {
-    return () => { if (gateTimerRef.current) clearTimeout(gateTimerRef.current); };
+  // Реальная фаза цикла приходит с прошивки (WS gate_status / GET /api/gate/status),
+  // локальной симуляции по таймерам больше нет.
+  const applyGateStatus = useCallback((data: { phase?: string; next?: string; position?: number }) => {
+    const phase = data?.phase;
+    if (phase === 'closed' || phase === 'opening' || phase === 'open' ||
+        phase === 'closing' || phase === 'stopped') {
+      setGateStatus(prev => {
+        if (phase === 'opening' && prev !== 'opening') {
+          setLastOpenTime(Date.now());
+          setSessionOpenCount(c => c + 1);
+        }
+        return phase;
+      });
+    }
+    if (data?.next === 'open' || data?.next === 'close') setGateNext(data.next);
+    if (typeof data?.position === 'number') setGatePos(Math.min(1, Math.max(0, data.position)));
   }, []);
 
   // --- Notification ---
@@ -290,6 +283,8 @@ function App() {
       ws.onopen = () => {
         setConnected(true);
         addLog('Подключено к устройству', 'success');
+        // Синхронизация фазы ворот при подключении/реконнекте
+        apiCall('/api/gate/status').then(applyGateStatus).catch(() => {});
       };
 
       ws.onclose = () => {
@@ -308,9 +303,9 @@ function App() {
           switch (event) {
             case 'log':
               addLog(data.message, data.type || 'info');
-              if (data.type === 'success' && data.message?.toLowerCase().includes('ворота активированы')) {
-                startGateCycle();
-              }
+              break;
+            case 'gate_status':
+              applyGateStatus(data);
               break;
             case 'wifi_status':
               setWifiStatus(data.status);
@@ -342,7 +337,7 @@ function App() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
-  }, [addLog, emit, showNotification, startGateCycle, refreshKeyCount]);
+  }, [addLog, emit, showNotification, applyGateStatus, apiCall, refreshKeyCount]);
 
   // --- Load initial stats ---
   useEffect(() => {
@@ -385,12 +380,12 @@ function App() {
       await apiCall('/api/gate/trigger', 'POST');
       showNotification('Сигнал отправлен', 'success');
       addLog('Сигнал на ворота отправлен', 'success');
-      startGateCycle();
     } catch {
       showNotification('Ошибка отправки', 'error');
       addLog('Ошибка отправки сигнала', 'error');
     } finally {
-      setTimeout(() => setGateTriggering(false), 1000);
+      // Короткая защита от дребезга; фазу дальше ведёт событие gate_status
+      setTimeout(() => setGateTriggering(false), 400);
     }
   };
 
@@ -419,11 +414,22 @@ function App() {
     }
   };
 
-  // Створка едет по реальным таймингам цикла ворот.
+  // Створка едет по реальным таймингам, движение из стопа — остаток пути.
   const leafOpen = gateStatus === 'opening' || gateStatus === 'open';
   const leafDuration = gateStatus === 'opening'
-    ? gateTimings.openDuration
-    : gateStatus === 'closing' ? gateTimings.closeDuration : 0.3;
+    ? Math.max(0.3, (1 - gatePos) * gateTimings.openDuration)
+    : gateStatus === 'closing' ? Math.max(0.3, gatePos * gateTimings.closeDuration) : 0.3;
+  const leafStyle: React.CSSProperties = { transitionDuration: `${leafDuration}s` };
+  // В стопе створка встаёт в реальную позицию (97% хода = полностью открыто)
+  if (gateStatus === 'stopped') leafStyle.transform = `translateX(-${Math.round(gatePos * 97)}%)`;
+
+  // Текст кнопки = что сделает следующая команда (пошаговая логика привода)
+  const gateBtnText = gateTriggering ? 'Отправка...'
+    : gateStatus === 'opening' || gateStatus === 'closing' ? 'Стоп'
+    : gateStatus === 'open' ? 'Закрыть ворота'
+    : gateStatus === 'stopped'
+      ? (gateNext === 'close' ? 'Закрыть ворота' : 'Открыть ворота')
+      : 'Открыть ворота';
 
   const renderHome = () => (
     <div className="home">
@@ -445,7 +451,7 @@ function App() {
             <div className="gate-scene">
               <div
                 className={`gate-leaf ${leafOpen ? 'gate-leaf--open' : ''}`}
-                style={{ transitionDuration: `${leafDuration}s` }}
+                style={leafStyle}
               >
                 {Array.from({ length: 7 }).map((_, i) => <span key={i} className="gate-bar" />)}
               </div>
@@ -461,7 +467,7 @@ function App() {
             disabled={gateTriggering}
           >
             {gateTriggering ? <span className="gate-btn-spinner" /> : <IconZap size={18} />}
-            {gateTriggering ? 'Отправка...' : 'Открыть ворота'}
+            {gateBtnText}
           </button>
 
           <div className="gate-stats">

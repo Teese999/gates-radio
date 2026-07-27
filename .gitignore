@@ -34,3 +34,5 @@ graphify-out/
 *.bak
 
 
+ota/
+userdata-backup.bin

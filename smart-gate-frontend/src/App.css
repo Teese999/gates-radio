@@ -333,6 +333,7 @@ button {
 .gate-pill--open .gate-pill-dot { box-shadow: 0 0 8px currentColor; }
 .gate-pill--opening, .gate-pill--closing { background: var(--amber-dim); color: var(--amber); }
 .gate-pill--opening .gate-pill-dot, .gate-pill--closing .gate-pill-dot { animation: pulse-dot 0.8s infinite; }
+.gate-pill--stopped { background: var(--amber-dim); color: var(--amber); }
 
 /* Визуализация откатных ворот: створка едет по реальным таймингам */
 .gate-visual {
@@ -378,6 +379,7 @@ button {
 }
 
 .gate-leaf--open { transform: translateX(-97%); }
+/* В фазе stopped позиция створки задаётся inline-стилем по данным прошивки */
 
 .gate-bar {
   flex: 1;
@@ -390,6 +392,8 @@ button {
 .gate-hero--open .gate-bar { background: linear-gradient(180deg, #4ade9d, #22946a); }
 .gate-hero--opening .gate-leaf, .gate-hero--closing .gate-leaf { border-color: var(--amber); }
 .gate-hero--opening .gate-bar, .gate-hero--closing .gate-bar { background: linear-gradient(180deg, #f5cd5d, #b98a1a); }
+.gate-hero--stopped .gate-leaf { border-color: var(--amber); }
+.gate-hero--stopped .gate-bar { background: linear-gradient(180deg, #f5cd5d, #b98a1a); }
 
 .gate-post {
   position: absolute;

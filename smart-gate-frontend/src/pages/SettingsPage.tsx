@@ -1,8 +1,75 @@
-import React, { useState, useEffect } from 'react';
-import { useApp } from '../App';
+import React, { useState, useEffect, useRef } from 'react';
+import { useApp, BASE_URL } from '../App';
 import {
   IconSettings, IconRadio, IconClock, IconActivity, IconMinus, IconPlus, IconCheck, IconRefresh,
 } from '../Icons';
+
+// --- OTA: загрузка файла прошивки/интерфейса с прогрессом ---
+const OtaUploader: React.FC<{ kind: 'firmware' | 'spiffs'; label: string; hint: string }> =
+  ({ kind, label, hint }) => {
+  const { addLog } = useApp();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [phase, setPhase] = useState<'idle' | 'uploading' | 'rebooting' | 'error'>('idle');
+
+  const upload = () => {
+    if (!file || phase === 'uploading') return;
+    setPhase('uploading');
+    setProgress(0);
+    const form = new FormData();
+    form.append('update', file);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${BASE_URL}/api/ota/${kind}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        setPhase('rebooting');
+        addLog('OTA завершено, устройство перезагружается', 'success');
+        // Даём плате перезагрузиться и подняться, затем возвращаем форму
+        setTimeout(() => { setPhase('idle'); setFile(null); setProgress(0); }, 15000);
+      } else {
+        setPhase('error');
+        addLog(`OTA ошибка: ${xhr.responseText || xhr.status}`, 'error');
+      }
+    };
+    xhr.onerror = () => { setPhase('error'); addLog('OTA: соединение оборвалось', 'error'); };
+    xhr.send(form);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>{label}</div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".bin"
+          style={{ display: 'none' }}
+          onChange={e => { setFile(e.target.files?.[0] || null); setPhase('idle'); }}
+        />
+        <button className="btn btn--ghost" style={{ flex: 1, overflow: 'hidden' }}
+          onClick={() => inputRef.current?.click()} disabled={phase === 'uploading'}>
+          {file ? file.name : 'Выбрать файл...'}
+        </button>
+        <button className="btn btn--primary" onClick={upload}
+          disabled={!file || phase === 'uploading' || phase === 'rebooting'}>
+          {phase === 'uploading' ? `${progress}%`
+            : phase === 'rebooting' ? 'Перезагрузка...'
+            : 'Обновить'}
+        </button>
+      </div>
+      {phase === 'uploading' && (
+        <div className="meter" aria-hidden="true">
+          <div className="meter-fill" style={{ width: `${progress}%` }} />
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{hint}</div>
+    </div>
+  );
+};
 
 interface Settings {
   frequency: number;
@@ -190,6 +257,26 @@ const SettingsPage: React.FC = () => {
           <SettingRow label="Девиация" unit="кГц" value={settings.frequencyDeviation} onChange={v => set('frequencyDeviation', v)} min={0.1} max={300} step={0.1} />
           <SettingRow label="RX полоса" unit="кГц" value={settings.rxBandwidth} onChange={v => set('rxBandwidth', v)} min={0.1} max={800} step={0.1} />
           <SettingRow label="Мощность" unit="dBm" value={settings.outputPower} onChange={v => set('outputPower', v)} min={-30} max={10} step={1} />
+        </div>
+      </div>
+
+      {/* Обновление ПО по воздуху */}
+      <div className="section">
+        <div className="section-header">
+          <IconRefresh size={14} />
+          Обновление ПО
+        </div>
+        <div className="section-pad" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <OtaUploader
+            kind="firmware"
+            label="Прошивка"
+            hint="Файл firmware-*.bin из ./make-ota.sh. Ключи и настройки не затрагиваются."
+          />
+          <OtaUploader
+            kind="spiffs"
+            label="Веб-интерфейс"
+            hint="Файл spiffs-*.bin из ./make-ota.sh. Обновляет только страницы, не прошивку."
+          />
         </div>
       </div>
 
