@@ -53,9 +53,10 @@
   var NET_CLASS_FALLBACK = { label: 'Прочее', radius: 0.55, depth: 5.6 };
 
   // 220 В — переменный ток, плюса/минуса нет: жилы красим как в реальном
-  // кабеле — фаза (L) коричневая, ноль (N) синяя. Метка — поле conductor
-  // у mains-цепи или у связи в корпусе.
-  var CONDUCTOR_COLOR = { L: 0x8a5a2b, N: 0x3d6fb4 };
+  // кабеле — фаза (L) коричневая, ноль (N) синяя, вторая коммутируемая
+  // фаза «закрыть» (L2) чёрная. Метка — поле conductor у mains-цепи
+  // или у связи в корпусе.
+  var CONDUCTOR_COLOR = { L: 0x8a5a2b, N: 0x3d6fb4, L2: 0x33363c };
 
   var KIND_LABEL = {
     module: 'Модуль',
@@ -1551,6 +1552,74 @@
     return new THREE.Vector3(hx(last[0]) + (dx / len) * 12, y, hz(last[1]) + (dy / len) * 12);
   }
 
+  /* --- Обход корпусов навесными жилами 220 В --------------------------
+     Пятачок сетевой перемычки часто сидит ПОД корпусом (клеммник, реле,
+     держатель предохранителя): вертикальный спуск протыкал бы пластик.
+     Для каждого конца ищем «выход» — точку сразу за ближайшей свободной
+     гранью корпуса; жила ныряет к пятачку понизу, вдоль платы, у самой
+     кромки детали. Если выходы двух концов соединяются по прямой, не
+     задевая корпусов, — жила идёт низом; иначе поднимается в пролёт.
+     Южный торец клеммника штрафуется: там входы под внешний кабель. */
+  var WRAP_MIN_H = 6;    // корпуса ниже — жиле не препятствие
+  var EXIT_M = 1.3;      // отступ выхода за грань корпуса, в шагах сетки
+
+  function tallCompAt(col, row) {
+    var hit = null;
+    (DATA.components || []).forEach(function (c) {
+      if (!c.body || (c.height || 0) < WRAP_MIN_H) return;
+      var b = c.body;
+      if (col >= b[0] - 0.05 && col <= b[2] + 0.05 &&
+          row >= b[1] - 0.05 && row <= b[3] + 0.05) {
+        if (!hit || (c.height || 0) > (hit.height || 0)) hit = c;
+      }
+    });
+    return hit;
+  }
+
+  function wrapSegBlocked(a, b) {
+    var n = Math.max(2, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.6));
+    for (var i = 0; i <= n; i++) {
+      var t = i / n;
+      if (tallCompAt(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)) return true;
+    }
+    return false;
+  }
+
+  function exitCandidates(hole) {
+    var comp = tallCompAt(hole[0], hole[1]);
+    if (!comp) return [{ at: hole, dist: 0, pen: 0 }];
+    var b = comp.body;
+    var res = [];
+    [
+      { at: [b[0] - EXIT_M, hole[1]], dist: hole[0] - b[0], side: 'w' },
+      { at: [b[2] + EXIT_M, hole[1]], dist: b[2] - hole[0], side: 'e' },
+      { at: [hole[0], b[1] - EXIT_M], dist: hole[1] - b[1], side: 'n' },
+      { at: [hole[0], b[3] + EXIT_M], dist: hole[1] > b[3] ? 0 : b[3] - hole[1], side: 's' }
+    ].forEach(function (c) {
+      if (c.at[0] < 1 || c.at[0] > COLS || c.at[1] < 1 || c.at[1] > ROWS) return;
+      if (tallCompAt(c.at[0], c.at[1])) return;   // выход упирается в соседний корпус
+      // южный торец клеммника занят входами внешнего кабеля — только если больше некуда
+      c.pen = (comp.kind === 'terminal' && c.side === 's') ? 8 : 0;
+      res.push(c);
+    });
+    return res.length ? res : [{ at: hole, dist: 0, pen: 0 }];
+  }
+
+  function chooseWrap(a, z) {
+    var best = null;
+    exitCandidates(a).forEach(function (ca) {
+      exitCandidates(z).forEach(function (cz) {
+        var len = Math.hypot(cz.at[0] - ca.at[0], cz.at[1] - ca.at[1]);
+        var blocked = wrapSegBlocked(ca.at, cz.at);
+        var cost = 3 * (ca.dist + cz.dist) + ca.pen + cz.pen + len + (blocked ? 60 : 0);
+        if (!best || cost < best.cost) {
+          best = { a: ca, z: cz, len: len, blocked: blocked, cost: cost };
+        }
+      });
+    });
+    return best;
+  }
+
   /* Перемычки узлов пайки (STAR.bridges) рисует билдер компонента —
      проволокой по нижней стороне платы. В routes цепи те же пути
      продублированы (чтобы валидатор видел связность узла), и вторым,
@@ -1580,24 +1649,38 @@
       var last = path[path.length - 1];
       var exits = net.offBoard && onEdge(last);   // маршрут уходит за край платы
 
-      /* Сторона монтажа — строго из данных (net.side): "top" — навесной провод
-         ПОВЕРХ платы, "bottom" — разводка под платой. Все 220 В помечены "top"
-         и под платой не появляются нигде: так их видно, они не идут рядом с
-         низковольтной разводкой и не проходят под контактами реле.
-         Если поля нет (старые данные) — прежнее правило по классу цепи. */
-      var aerial = net.side ? net.side === 'top' : mains;
+      /* Сторона монтажа — строго из данных (net.side). ВСЯ разводка, включая
+         сеть 220, идёт ПОД платой ("bottom"): сверху остаются только корпуса
+         компонентов. Жилы 220 В отличаются лишь тем, что не выходят за пределы
+         островка 220, где нет низковольтных трасс. Ветка "top" (навесной
+         провод с боковыми взлётами) сохранена для будущих исключений. */
+      var aerial = net.side === 'top';
       var pts = [];
 
       if (aerial) {
-        // высота пролёта: выше самого высокого корпуса на пути, минимум 12 мм
-        var yArc = TOP + Math.max(12, pathObstacleHeight(path) + 4) + (hashStr(net.id + ri) % 3) * 1.5;
-        var A = new THREE.Vector3(hx(path[0][0]), TOP + 0.15, hz(path[0][1]));
-        var Z = new THREE.Vector3(hx(last[0]), TOP + 0.15, hz(last[1]));
+        /* Жилы 220 В идут видимым «жгутом» НАД зоной 220 — так же читаемо,
+           как разводка снизу платы: у пятачка жила выныривает сбоку от
+           корпуса (боковой «выход», см. chooseWrap — сквозь пластик ничего
+           не проходит), взлетает вертикально, летит по воздуху выше всех
+           корпусов на пути и ныряет к дальнему пятачку тоже сбоку. */
+        var A = new THREE.Vector3(hx(path[0][0]), TOP + 0.4, hz(path[0][1]));
+        var Z = new THREE.Vector3(hx(last[0]), TOP + 0.4, hz(last[1]));
+        var wrap = (path.length === 2 && !exits) ? chooseWrap(path[0], last) : null;
+        var ea = wrap ? new THREE.Vector3(hx(wrap.a.at[0]), TOP + 1.6, hz(wrap.a.at[1])) : null;
+        var ez = wrap ? new THREE.Vector3(hx(wrap.z.at[0]), TOP + 1.6, hz(wrap.z.at[1])) : null;
+
+        // высота пролёта: выше самого высокого корпуса на пути, минимум 14 мм
+        var arcPts = path.slice();
+        if (wrap) arcPts = arcPts.concat([wrap.a.at, wrap.z.at]);
+        var yArc = TOP + Math.max(14, pathObstacleHeight(arcPts) + 4) + (hashStr(net.id + ri) % 3) * 1.5;
         pts.push(A);
-        // почти вертикальный взлёт у пятачка: провод «выныривает» из клеммы/пина
-        pts.push(new THREE.Vector3(A.x, yArc - 2.4, A.z));
+        if (ea) pts.push(ea);
+        // взлёт у выхода из-под корпуса (или у самого пятачка, если он открыт)
+        pts.push(new THREE.Vector3(ea ? ea.x : A.x, yArc - 2.4, ea ? ea.z : A.z));
         if (path.length === 2) {
-          pts.push(new THREE.Vector3((A.x + Z.x) / 2, yArc, (A.z + Z.z) / 2));
+          var mx = ((ea ? ea.x : A.x) + (ez ? ez.x : Z.x)) / 2;
+          var mz = ((ea ? ea.z : A.z) + (ez ? ez.z : Z.z)) / 2;
+          pts.push(new THREE.Vector3(mx, yArc, mz));
         } else {
           // дуга через промежуточные точки path — на высоте пролёта
           for (var k = 1; k < path.length - 1; k++) {
@@ -1608,7 +1691,8 @@
           // навесная жила, уходящая за край: спуска на пятачок нет, уводим по воздуху
           pts.push(offBoardPoint(path[path.length - 2], last, yArc));
         } else {
-          pts.push(new THREE.Vector3(Z.x, yArc - 2.4, Z.z));
+          pts.push(new THREE.Vector3(ez ? ez.x : Z.x, yArc - 2.4, ez ? ez.z : Z.z));
+          if (ez) pts.push(ez);
           pts.push(Z);
         }
       } else {
@@ -1705,7 +1789,7 @@
   // на клемму СВЕРХУ (все 220 В), иначе подключается снизу, как разводка.
   function encAnchor(id, pinSpec, topSide) {
     var n = byEnc[id];
-    if (n && n.at) return { x: hx(n.at[0]), z: hz(n.at[1]), y: ENC_CABLE, outside: true };
+    if (n && n.at) return { x: hx(n.at[0]), z: hz(n.at[1]), y: n.h ? TOP + n.h : ENC_CABLE, outside: true };
     var pp = pinPoint(id, pinSpec);
     var c = byComp[id];
     if (c && c.body) {
@@ -1742,35 +1826,39 @@
         cap.position.set(x + dx, ENC_BASE + 3.4, z);
         addE(cap);
       });
-    } else if (node.id === 'E-MAINS') {
-      // кабель-ввод: корпус гермоввода, гайка и кабель, уходящий наружу
+    } else if (node.id === 'E-MAINS' || node.id === 'E-DRIVE') {
+      // гермоввод PG9 в южной стенке: корпус вдоль Z на высоте проёма
+      // (выше компонентов, см. case.scad pen_z), гайка изнутри, кабель
+      // уходит наружу и вниз
+      var gy = ENC_BASE + (node.h || 3.4);
       var gl = cylMesh(2.6, 8, matStd(0x9aa0a7, { rough: 0.35, metal: 0.6 }), 16);
-      gl.rotation.z = Math.PI / 2;
-      gl.position.set(x + 1, ENC_BASE + 3.2, z);
+      gl.rotation.x = Math.PI / 2;
+      gl.position.set(x, gy, z + 1);
       addE(gl);
       var nut = cylMesh(3.5, 2.4, matStd(0x84898f, { rough: 0.4, metal: 0.6 }), 6);
-      nut.rotation.z = Math.PI / 2;
-      nut.position.set(x + 3.4, ENC_BASE + 3.2, z);
+      nut.rotation.x = Math.PI / 2;
+      nut.position.set(x, gy, z - 2.4);
       addE(nut, false);
       var cable = new THREE.Mesh(
         new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
-          new THREE.Vector3(x - 3, ENC_BASE + 3.2, z),
-          new THREE.Vector3(x - 8, ENC_BASE + 2.6, z + 1.5),
-          new THREE.Vector3(x - 12, ENC_BASE + 1.2, z + 4)
+          new THREE.Vector3(x, gy, z + 3),
+          new THREE.Vector3(x, gy - 2.6, z + 8),
+          new THREE.Vector3(x, gy - 7, z + 12)
         ]), 24, 1.25, 8, false),
         matStd(0x1a1d21, { rough: 0.7 })
       );
       addE(cable);
-    } else if (node.id === 'E-DRIVE') {
-      // привод ворот: основание и два столбика-«ворота»
-      var drvBase = boxMesh(ENC_W, 3, ENC_D, matStd(col, { rough: 0.7, opacity: 0.5 }));
-      drvBase.position.set(x, ENC_BASE + 1.5, z);
-      addE(drvBase);
-      [-ENC_W * 0.26, ENC_W * 0.26].forEach(function (dx) {
-        var post = boxMesh(2.4, 7, 2.4, matStd(0x9aa0a7, { rough: 0.5, metal: 0.3 }));
-        post.position.set(x + dx, ENC_BASE + 6.5, z);
-        addE(post);
-      });
+      if (node.id === 'E-DRIVE') {
+        // за стенкой — сам привод: основание и два столбика-«ворота»
+        var drvBase = boxMesh(ENC_W * 0.8, 3, ENC_D * 0.7, matStd(col, { rough: 0.7, opacity: 0.5 }));
+        drvBase.position.set(x, ENC_BASE + 1.5, z + 16);
+        addE(drvBase);
+        [-ENC_W * 0.2, ENC_W * 0.2].forEach(function (dx) {
+          var post = boxMesh(2.4, 7, 2.4, matStd(0x9aa0a7, { rough: 0.5, metal: 0.3 }));
+          post.position.set(x + dx, ENC_BASE + 6.5, z + 16);
+          addE(post);
+        });
+      }
     } else {
       // неизвестный узел — прежний полупрозрачный блок
       var gen = boxMesh(ENC_W, ENC_H, ENC_D, matStd(col, { rough: 0.8, opacity: 0.26 }));
@@ -1778,7 +1866,9 @@
       addE(gen);
     }
 
-    // пунктирная рамка — знак того, что узел не на плате
+    // пунктирная рамка — знак того, что узел не на плате;
+    // у гермовводов она висит на высоте проёма в стенке
+    var frameY = node.h ? ENC_BASE + node.h : ENC_BASE + ENC_H / 2;
     var frame = new THREE.Mesh(new THREE.BoxGeometry(ENC_W, ENC_H, ENC_D));
     var dash = new THREE.LineSegments(
       new THREE.EdgesGeometry(frame.geometry),
@@ -1787,7 +1877,7 @@
         transparent: true, opacity: fuse ? 1 : 0.95
       })
     );
-    dash.position.set(x, ENC_BASE + ENC_H / 2, z);
+    dash.position.set(x, frameY, z);
     dash.computeLineDistances();
     gEnclosure.add(dash);
     register(dash, { kind: 'enclosure', id: node.id });
@@ -1800,12 +1890,53 @@
       border: 'rgba(' + [col >> 16 & 255, col >> 8 & 255, col & 255].join(',') + ',0.85)',
       bg: 'rgba(9,12,17,0.78)'
     });
-    lab.position.set(x, ENC_BASE + ENC_H + 3.8 + (ni % 2) * 5.2, z);
+    lab.position.set(x, frameY + ENC_H / 2 + 3.8 + (ni % 2) * 5.2, z);
     gEnclosure.add(lab);
     register(lab, { kind: 'enclosure', id: node.id });
   });
 
+  /* Вход в зажим клеммника: у KF301 отверстия под провод — на южном торце,
+     на высоте зажима. Внешний кабель заходит туда ГОРИЗОНТАЛЬНО, а не
+     падает на пятачок сверху. */
+  function terminalEntry(comp, pinName) {
+    var g = compMetrics(comp);
+    var bh = Math.max(g.h * 0.8, 6);
+    var px = null;
+    (comp.pins || []).forEach(function (p) {
+      if (p.name === pinName && p.hole) px = hx(p.hole[0]);
+    });
+    if (px === null) px = g.cx;
+    return { x: px, y: TOP + bh * 0.35, zFace: g.cz + g.d / 2 };
+  }
+
   encLinks.forEach(function (link, idx) {
+    var cls = link['class'] === 'power' ? 'power' : 'mains';
+    var pts;
+
+    /* Кабель между стеночным узлом (гермовводом) и клеммником: спуск вдоль
+       стенки в зазоре за краем платы, потом горизонтально в торец зажима. */
+    var termId = byComp[link.from] && byComp[link.from].kind === 'terminal' ? link.from
+      : byComp[link.to] && byComp[link.to].kind === 'terminal' ? link.to : null;
+    var glandId = byEnc[link.from] ? link.from : byEnc[link.to] ? link.to : null;
+
+    if (termId && glandId) {
+      var t = terminalEntry(byComp[termId], termId === link.from ? link.fromPin : link.toPin);
+      var nd = byEnc[glandId];
+      var nx = hx(nd.at[0]), nz = hz(nd.at[1]);
+      var ny = TOP + (nd.h || 3.4);
+      // жилы одного кабеля расходятся веером прямо у гермоввода
+      var spread = Math.max(-2.4, Math.min(2.4, (t.x - nx) * 0.12));
+      pts = [
+        new THREE.Vector3(nx + spread, ny, nz),
+        new THREE.Vector3(nx + (t.x - nx) * 0.3, ny - 4, nz - 2.2),
+        new THREE.Vector3(t.x, t.y + (ny - t.y) * 0.35, t.zFace + 6.5),
+        new THREE.Vector3(t.x, t.y, t.zFace + 4.2),
+        new THREE.Vector3(t.x, t.y, t.zFace + 0.3)
+      ];
+      drawEncLink(link, idx, cls, pts);
+      return;
+    }
+
     // side:"top" — кабель идёт поверху и опускается на клемму сверху.
     // Так заходят все 220 В: гермовводы стоят высоко, под платой сетевых
     // проводов нет вообще (см. meta.wiring в board.json).
@@ -1813,8 +1944,6 @@
     var a = encAnchor(link.from, link.fromPin, overBoard);
     var b = encAnchor(link.to, link.toPin, overBoard);
     if (!a || !b) return;   // ссылка в никуда — молча пропускаем
-    var cls = link['class'] === 'power' ? 'power' : 'mains';
-    var pts;
 
     if (a.outside && b.outside) {
       // кабель между двумя узлами в корпусе — идёт по воздуху на их же высоте
@@ -1850,6 +1979,10 @@
       ];
     }
 
+    drawEncLink(link, idx, cls, pts);
+  });
+
+  function drawEncLink(link, idx, cls, pts) {
     var curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.2);
     var cableColor = CONDUCTOR_COLOR[link.conductor] || ENC_LINK_COLOR[cls];
     var tube = new THREE.Mesh(
@@ -1858,6 +1991,18 @@
     );
     gEnclosure.add(tube);
     register(tube, { kind: 'enclink', index: idx, from: link.from, to: link.to, linkClass: cls }, { pick: true });
+
+    // «рентген»-след, как у жил 220 В на плате: кабель читается и тогда,
+    // когда он скрыт клеммниками или сетевым модулем
+    if (cls === 'mains') {
+      var ghost = new THREE.Mesh(tube.geometry, new THREE.MeshBasicMaterial({
+        color: cableColor, transparent: true, opacity: 0.24,
+        depthTest: false, depthWrite: false
+      }));
+      ghost.renderOrder = 6;
+      gEnclosure.add(ghost);
+      register(ghost, { kind: 'enclink', index: idx, from: link.from, to: link.to, linkClass: cls });
+    }
 
     if (link.label) {
       var mid = curve.getPoint(0.5);
@@ -1874,7 +2019,7 @@
       encLinkLabels.push(ll);
       register(ll, { kind: 'enclink', index: idx, from: link.from, to: link.to, linkClass: cls });
     }
-  });
+  }
 
   /* ------------------------------------------------------------------ */
   /*  4c. Контур корпуса (параметры — из hardware/enclosure/case.scad)   */
@@ -2492,7 +2637,7 @@
                '<div><span class="tag" style="border-color:' + netCss(net) + '">' +
                esc(cls.label) + '</span>' +
                (net.conductor ? ' <span class="tag" style="border-color:' + netCss(net) + '">жила ' +
-                 esc(net.conductor === 'L' ? 'L — фаза' : 'N — ноль') + '</span>' : '') +
+                 esc({ L: 'L — фаза, коричневая', L2: 'L2 — фаза «закрыть», чёрная', N: 'N — ноль, синяя' }[net.conductor] || net.conductor) + '</span>' : '') +
                (net.side ? ' <span class="tag" data-side="' + esc(net.side) + '">' +
                  (net.side === 'top' ? 'поверх платы, навесом' : 'под платой') + '</span>' : '') +
                (net.wire ? ' <span class="tag">' + esc(net.wire) + '</span>' : '') +
@@ -2625,8 +2770,10 @@
     activeStep = -1;
     renderSteps();
     renderLists();
-    if (n.side === 'top' || n['class'] === 'mains') {
-      hint('Провод идёт навесом ПОВЕРХ платы — его видно сверху и в изометрии.');
+    if (n.side === 'top') {
+      hint('Жила идёт навесом НАД платой: взлетает сбоку от корпуса и ныряет к пятачку тоже сбоку.');
+    } else if (n['class'] === 'mains' && currentView !== 'bottom') {
+      hint('Сеть 220 В разведена ПОД платой, в пределах островка 220 — смотри вид «Снизу» или включи «Просветить плату».');
     } else if (currentView === 'top') {
       hint('Разводка проходит снизу платы — переключись на вид «Снизу».');
     }
@@ -2746,16 +2893,16 @@
     setTab('steps');
     var el = elSteps.querySelector('.step.on');
     if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
-    // если шаг про разводку — подсказать, где её смотреть: обычные цепи идут
-    // по нижней стороне, а сетевые жилы (mains) — навесом над платой
+    // если шаг про разводку — подсказать, где её смотреть: вся разводка,
+    // включая сеть 220, идёт по нижней стороне платы
     var underNets = (h.nets || []).some(function (id) {
       var n = byNet[id];
-      return n && (n.side ? n.side === 'bottom' : n['class'] !== 'mains');
+      return n && n.side !== 'top';
     });
     if ((h.nets && h.nets.length) && !(h.components && h.components.length) && currentView !== 'bottom') {
       hint(underNets
         ? 'Шаг про разводку — включи вид «Снизу», провода идут по нижней стороне.'
-        : 'Сетевые жилы идут навесом ПОВЕРХ платы — смотри сверху или в изометрии.');
+        : 'Навесные жилы идут над платой — смотри сверху или в изометрии.');
     } else {
       hint('');
     }

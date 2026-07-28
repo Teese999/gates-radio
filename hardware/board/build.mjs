@@ -124,7 +124,7 @@ ${css}
         <label class="check"><input type="checkbox" data-layer="signal" checked>
           <i class="sw" style="background:linear-gradient(135deg,#7F77DD,#1D9E75)"></i><span>Сигналы</span><small>SPI / UART</small></label>
         <label class="check"><input type="checkbox" data-layer="mains" checked>
-          <i class="sw" style="background:#D4353B"></i><span>220 В</span><small>навесом ПОВЕРХ платы</small></label>
+          <i class="sw" style="background:#D4353B"></i><span>220 В</span><small>под платой, островок 220</small></label>
       </div>
       <div class="section">
         <h4>Сверху платы</h4>
@@ -144,7 +144,8 @@ ${css}
         <label class="check"><input type="checkbox" data-layer="case">
           <i class="sw" style="background:transparent;border:1px dashed #7c8ea3"></i><span>Корпус (контур)</span><small>160×110×46</small></label>
         <div class="sub-legend">
-          <div><i class="sw" style="background:#8A5A2B"></i><span>фаза (L)</span><small>коричневый, через предохранитель и реле</small></div>
+          <div><i class="sw" style="background:#8A5A2B"></i><span>фаза (L)</span><small>коричневый: предохранитель, реле, «открыть»</small></div>
+          <div><i class="sw" style="background:#33363C"></i><span>жила «закрыть»</span><small>чёрная, фаза с контакта NO K2</small></div>
           <div><i class="sw" style="background:#3D6FB4"></i><span>ноль (N)</span><small>синий, без коммутации</small></div>
           <div><i class="sw" style="background:#BA7517"></i><span>12 В на плату</span><small>постоянка после БП</small></div>
         </div>
