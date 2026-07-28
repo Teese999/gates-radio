@@ -141,6 +141,11 @@ ${css}
         <h4>Вне платы</h4>
         <label class="check"><input type="checkbox" data-layer="enclosure" checked>
           <i class="sw" style="background:rgba(212,53,59,0.35);border:1px dashed #D4353B"></i><span>Внешние узлы (корпус)</span><small>БП и 220 В</small></label>
+        <div class="sub-legend">
+          <div><i class="sw" style="background:#8A5A2B"></i><span>фаза (L)</span><small>коричневый, через предохранитель и реле</small></div>
+          <div><i class="sw" style="background:#3D6FB4"></i><span>ноль (N)</span><small>синий, без коммутации</small></div>
+          <div><i class="sw" style="background:#BA7517"></i><span>12 В на плату</span><small>постоянка после БП</small></div>
+        </div>
       </div>
       <div class="section" id="legend"></div>
     </div>

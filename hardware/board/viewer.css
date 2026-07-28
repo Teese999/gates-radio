@@ -366,3 +366,9 @@ ul.routes .rn { color: var(--text-mute); display: block; margin-top: 3px; line-h
   background: var(--bg); color: var(--text); font-family: var(--mono);
   padding: 40px; text-align: center; line-height: 1.6;
 }
+
+/* Мини-легенда проводников 220 В под чекбоксом внешних узлов */
+.sub-legend { margin: 4px 0 2px 26px; display: flex; flex-direction: column; gap: 3px; }
+.sub-legend div { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--text-dim, #9aa3b2); }
+.sub-legend .sw { width: 14px; height: 5px; border-radius: 2px; flex-shrink: 0; }
+.sub-legend small { opacity: 0.75; }

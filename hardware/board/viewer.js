@@ -644,6 +644,9 @@
 
   var ENC_LINK_COLOR = { mains: rampHex('red'), power: rampHex('amber') };
   var ENC_LINK_RADIUS = { mains: 1.25, power: 0.95 };
+  // 220 В — переменный ток, плюса/минуса нет: кабели красим как реальные жилы,
+  // фаза (L) — коричневая, ноль (N) — синяя. Метка — в link.conductor.
+  var ENC_CONDUCTOR_COLOR = { L: 0x8a5a2b, N: 0x3d6fb4 };
   var encLinkLabels = [];               // подписи кабелей — показываем при наведении/выборе
 
   // Предохранитель рисуем не коробкой, а стеклянной вставкой: он маленький,
@@ -749,9 +752,10 @@
     }
 
     var curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.2);
+    var cableColor = ENC_CONDUCTOR_COLOR[link.conductor] || ENC_LINK_COLOR[cls];
     var tube = new THREE.Mesh(
       new THREE.TubeGeometry(curve, 60, ENC_LINK_RADIUS[cls], 7, false),
-      new THREE.MeshStandardMaterial({ color: ENC_LINK_COLOR[cls], roughness: 0.5, metalness: 0.1 })
+      new THREE.MeshStandardMaterial({ color: cableColor, roughness: 0.5, metalness: 0.1 })
     );
     gEnclosure.add(tube);
     register(tube, { kind: 'enclink', index: idx, from: link.from, to: link.to, linkClass: cls }, { pick: true });
