@@ -175,9 +175,14 @@ ISOLATION = [
 ]
 
 html = f"""<!doctype html><html lang=ru><meta charset=utf-8>
+<meta name=viewport content="width=device-width, initial-scale=1">
+<meta name=color-scheme content="light">
 <title>Умные Ворота — листы сборки платы</title>
 <style>
- body {{ font: 13px/1.5 -apple-system, 'Segoe UI', Roboto, sans-serif; color:#1c2126; margin: 24px; }}
+ /* печатный документ: фон всегда белый, независимо от темы браузера */
+ html {{ background: #fff; }}
+ body {{ font: 13px/1.5 -apple-system, 'Segoe UI', Roboto, sans-serif;
+        color: #1c2126; background: #fff; margin: 24px; }}
  h1 {{ font-size: 20px; }} h2 {{ font-size: 16px; margin-top: 28px; border-bottom: 2px solid #ccc; padding-bottom: 4px; }}
  table {{ border-collapse: collapse; width: 100%; margin: 8px 0 16px; }}
  th, td {{ border: 1px solid #c9d0d6; padding: 3px 7px; text-align: left; vertical-align: top; font-size: 12px; }}
