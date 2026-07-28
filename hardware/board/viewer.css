@@ -255,6 +255,18 @@ button.icon { padding: 6px 9px; line-height: 1; }
 .row .id { font-family: var(--mono); font-size: 11px; color: var(--text-mute); margin-left: auto; }
 .row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* подзаголовок яруса в списке компонентов */
+.list-sub {
+  margin: 10px 0 4px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  font-weight: 600;
+}
+.list-sub:first-child { margin-top: 0; }
+
 /* ---------- панель информации ---------- */
 
 .info-title { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }

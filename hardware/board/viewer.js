@@ -61,7 +61,9 @@
     resistor: 'Резистор',
     capacitor: 'Конденсатор',
     terminal: 'Клеммник',
-    junction: 'Узел пайки'
+    junction: 'Узел пайки',
+    psu: 'Блок питания',
+    'terminal-block': 'Клеммная колодка'
   };
 
   var FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif';
@@ -996,6 +998,220 @@
   });
 
   /* ------------------------------------------------------------------ */
+  /*  3b. Нижний ярус этажерки — платы питания (powerBoards)             */
+  /* ------------------------------------------------------------------ */
+
+  var PB = DATA.powerBoards || {};
+  var pbBoards = PB.boards || [];
+  var STACK_GAP = PB.stackGap || 44;     // низ основной платы над дном корпуса
+  var PB_BOSS = 6;                       // бобышки под платами нижнего яруса (case.scad)
+  var floorY = BOT - STACK_GAP;          // внутреннее дно корпуса
+  var powerAnchors = {};                 // id компонента -> точка привязки межъярусных кабелей
+  var compBoard = {};                    // id компонента -> его плата нижнего яруса
+  var powerComps = [];                   // компоненты нижнего яруса по порядку данных
+
+  // Угол основной платы — начало координат для offsetMM нижних плат
+  var mainCornerX = hx(1) - PITCH / 2;
+  var mainCornerZ = hz(1) - PITCH / 2;
+
+  // Сетка отверстий произвольной платы: те же 4 InstancedMesh, что у основной,
+  // и те же материалы — тема и «просветить» применяются ко всем ярусам разом.
+  function addHoleGrid(parent, cols, rows, phx, phz, yTop, yBot) {
+    var n = cols * rows;
+    var ringGeo = new THREE.RingGeometry(0.60, 0.96, 12);
+    var holeGeo = new THREE.CircleGeometry(0.62, 10);
+    var padMat = boardMesh.userData.padMat;
+    var holeMat = boardMesh.userData.holeMat;
+    var padTop = new THREE.InstancedMesh(ringGeo, padMat, n);
+    var padBot = new THREE.InstancedMesh(ringGeo, padMat, n);
+    var holTop = new THREE.InstancedMesh(holeGeo, holeMat, n);
+    var holBot = new THREE.InstancedMesh(holeGeo, holeMat, n);
+    var mUp = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+    var mDn = new THREE.Matrix4().makeRotationX(Math.PI / 2);
+    var m = new THREE.Matrix4();
+    var i = 0;
+    for (var r = 1; r <= rows; r++) {
+      for (var c = 1; c <= cols; c++) {
+        var x = phx(c), z = phz(r);
+        m.copy(mUp).setPosition(x, yTop + 0.012, z); padTop.setMatrixAt(i, m);
+        m.copy(mUp).setPosition(x, yTop + 0.020, z); holTop.setMatrixAt(i, m);
+        m.copy(mDn).setPosition(x, yBot - 0.012, z); padBot.setMatrixAt(i, m);
+        m.copy(mDn).setPosition(x, yBot - 0.020, z); holBot.setMatrixAt(i, m);
+        i++;
+      }
+    }
+    [padTop, padBot, holTop, holBot].forEach(function (im) {
+      im.instanceMatrix.needsUpdate = true;
+      im.frustumCulled = false;
+      parent.add(im);
+    });
+  }
+
+  /* --- билдеры компонентов нижнего яруса (платы 6x8) --- */
+
+  // Блок питания RS-15-12: металлический корпус, маркировка, клеммная планка у пинов
+  function buildPsuAt(comp, m, yTop, add, holeXZ) {
+    var h = comp.height || 28;
+    var body = boxMesh(m.w, h, m.d, matStd(0xaeb5bc, { rough: 0.35, metal: 0.7 }));
+    body.position.set(m.cx, yTop + h / 2, m.cz);
+    add(body);
+    var lab = new THREE.Mesh(
+      new THREE.PlaneGeometry(m.w * 0.7, m.d * 0.5),
+      matStd(0xffffff, { rough: 0.5, map: textTex(['RS-15-12'], { bg: '#aeb5bc', fg: '#20242a', w: 256, h: 80, fs: 40 }) })
+    );
+    lab.rotation.x = -Math.PI / 2;
+    lab.position.set(m.cx, yTop + h + 0.06, m.cz);
+    add(lab, false);
+    // клеммная планка вдоль ряда пинов + винты над каждым пином
+    var pins = (comp.pins || []).filter(function (p) { return p.hole; });
+    if (pins.length) {
+      var cxs = 0;
+      pins.forEach(function (p) { cxs += holeXZ(p.hole).x; });
+      cxs /= pins.length;
+      var strip = boxMesh(3.6, 6, m.d * 0.92, matStd(0x22262b, { rough: 0.6 }));
+      strip.position.set(cxs, yTop + 3, m.cz);
+      add(strip);
+      pins.forEach(function (p) {
+        var P = holeXZ(p.hole);
+        var sc = cylMesh(1.0, 0.9, matStd(0xc9ced4, { rough: 0.35, metal: 0.6 }), 10);
+        sc.position.set(P.x, yTop + 6.4, P.z);
+        add(sc, false);
+      });
+    }
+  }
+
+  // Колодка ZK-316: полупрозрачный корпус + латунные винты над пинами
+  function buildTermBlockAt(comp, m, yTop, add, holeXZ) {
+    var h = comp.height || 20;
+    var blk = boxMesh(m.w, h * 0.8, m.d, matStd(rampHex(comp.ramp), { rough: 0.6, opacity: 0.35 }));
+    blk.position.set(m.cx, yTop + h * 0.4, m.cz);
+    add(blk);
+    (comp.pins || []).forEach(function (p) {
+      if (!p.hole) return;
+      var P = holeXZ(p.hole);
+      var sc = cylMesh(1.5, 0.9, matStd(0xc9a44a, { rough: 0.35, metal: 0.7 }), 12);
+      sc.position.set(P.x, yTop + h * 0.8 + 0.45, P.z);
+      add(sc, false);
+      var slot = boxMesh(2.2, 0.18, 0.45, matStd(0x14171c, { rough: 0.4 }));
+      slot.position.set(P.x, yTop + h * 0.8 + 0.95, P.z);
+      add(slot, false);
+    });
+  }
+
+  // Площадка разгрузки кабелей: низкий блок и пара стяжек
+  function buildStrainAt(comp, m, yTop, add) {
+    var base = boxMesh(m.w, 2.5, m.d, matStd(0x6a6f75, { rough: 0.8 }));
+    base.position.set(m.cx, yTop + 1.25, m.cz);
+    add(base);
+    [-0.25, 0.25].forEach(function (k) {
+      var strap = boxMesh(1.6, 3.4, m.d * 0.72, matStd(0x14171c, { rough: 0.6 }));
+      strap.position.set(m.cx + m.w * k, yTop + 2.5 + 1.4, m.cz);
+      add(strap, false);
+    });
+  }
+
+  pbBoards.forEach(function (pb) {
+    var cfg = pb.board || {};
+    var cols = cfg.cols || 30, rows = cfg.rows || 22;
+    var pitch = cfg.pitch || PITCH;
+    var thick = cfg.thickness || 1.6;
+    var off = pb.offsetMM || [0, 0];
+    var x0 = mainCornerX + off[0];       // угол платы 6x8 в мире
+    var z0 = mainCornerZ + off[1];
+    var yBot = floorY + PB_BOSS;
+    var yTop = yBot + thick;
+
+    function phx(c) { return x0 + pitch / 2 + (c - 1) * pitch; }
+    function phz(r) { return z0 + pitch / 2 + (r - 1) * pitch; }
+    function holeXZ(h) { return { x: phx(h[0]), z: phz(h[1]) }; }
+    function pRect(rect) {
+      var c1 = Math.min(rect[0], rect[2]), c2 = Math.max(rect[0], rect[2]);
+      var r1 = Math.min(rect[1], rect[3]), r2 = Math.max(rect[1], rect[3]);
+      return {
+        c1: c1, r1: r1, c2: c2, r2: r2,
+        w: (c2 - c1 + 1) * pitch, d: (r2 - r1 + 1) * pitch,
+        cx: (phx(c1) + phx(c2)) / 2, cz: (phz(r1) + phz(r2)) / 2
+      };
+    }
+
+    // текстолит + рёбра — общие материалы с основной платой (тема, «просветить»)
+    var w = cols * pitch, d = rows * pitch;
+    var plate = new THREE.Mesh(new THREE.BoxGeometry(w, thick, d), boardMat);
+    plate.position.set(x0 + w / 2, yBot + thick / 2, z0 + d / 2);
+    gBoard.add(plate);
+    var pe = new THREE.LineSegments(new THREE.EdgesGeometry(plate.geometry), boardEdges.material);
+    pe.position.copy(plate.position);
+    gBoard.add(pe);
+    addHoleGrid(gBoard, cols, rows, phx, phz, yTop, yBot);
+
+    (cfg.mountingHoles || []).forEach(function (h) {
+      var geo = new THREE.RingGeometry(1.6, 2.6, 20);
+      var mat = new THREE.MeshStandardMaterial({ color: 0xc9ccd2, roughness: 0.35, metalness: 0.8, side: THREE.DoubleSide });
+      var ring = new THREE.Mesh(geo, mat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(phx(h[0]), yTop + 0.03, phz(h[1]));
+      gBoard.add(ring);
+    });
+
+    (pb.components || []).forEach(function (comp) {
+      byComp[comp.id] = comp;
+      compBoard[comp.id] = { boardId: pb.id, boardLabel: pb.label };
+      powerComps.push(comp);
+
+      var grp = new THREE.Group();
+      gComponents.add(grp);
+      function add(mesh, pick) {
+        grp.add(mesh);
+        register(mesh, { kind: 'component', id: comp.id }, { pick: pick !== false });
+        return mesh;
+      }
+
+      var m = pRect(comp.body || [1, 1, 1, 1]);
+      if (comp.kind === 'psu') buildPsuAt(comp, m, yTop, add, holeXZ);
+      else if (comp.kind === 'terminal-block') buildTermBlockAt(comp, m, yTop, add, holeXZ);
+      else if (comp.kind === 'junction') buildStrainAt(comp, m, yTop, add);
+      else {
+        var gen = boxMesh(m.w, Math.max(comp.height || 4, 1), m.d, matStd(rampHex(comp.ramp), { rough: 0.6 }));
+        gen.position.set(m.cx, yTop + (comp.height || 4) / 2, m.cz);
+        add(gen);
+      }
+
+      // золочёные пятачки-пины
+      (comp.pins || []).forEach(function (p) {
+        if (!p.hole) return;
+        var P = holeXZ(p.hole);
+        var pin = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.55, 0.55, 1.8, 8),
+          matStd(COL_GOLD, { rough: 0.35, metal: 0.8 })
+        );
+        pin.position.set(P.x, yTop + 0.9, P.z);
+        grp.add(pin);
+        register(pin, { kind: 'pin', id: comp.id + ':' + p.name, compId: comp.id, netId: p.net, pinName: p.name },
+          { pick: true });
+      });
+
+      // подпись — как у верхнего яруса (мелочь показывается по наведению)
+      var minor = (comp.height || 4) < 8;
+      var lab = makeLabel(comp.label || comp.id, { size: minor ? 3.2 : 3.8 });
+      lab.position.set(m.cx, yTop + (comp.height || 6) + 3.4, m.cz);
+      lab.visible = !minor;
+      gLabels.add(lab);
+      register(lab, { kind: 'label', compId: comp.id, minor: minor });
+
+      // якорь межъярусных кабелей: центроид пинов (или центр тела)
+      var ax = m.cx, az = m.cz, pcnt = 0;
+      (comp.pins || []).forEach(function (p) {
+        if (!p.hole) return;
+        var P = holeXZ(p.hole);
+        if (!pcnt) { ax = 0; az = 0; }
+        ax += P.x; az += P.z; pcnt++;
+      });
+      if (pcnt) { ax /= pcnt; az /= pcnt; }
+      powerAnchors[comp.id] = { x: ax, z: az, y: yTop + Math.min(comp.height || 8, 20) * 0.7 };
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
   /*  4. Провода снизу платы                                             */
   /* ------------------------------------------------------------------ */
 
@@ -1079,8 +1295,12 @@
   var ENC_W = 7 * PITCH;      // габарит блока-«призрака» — уже шага между узлами,
   var ENC_D = 5 * PITCH;      // чтобы кабели между ними не слипались
   var ENC_H = 9;
-  var ENC_CABLE = TOP + ENC_H * 0.45;   // высота кабеля между двумя внешними узлами
-  var ENC_Y = -11;                      // глубина кабеля к плате (ниже всей разводки)
+  // Стеночные узлы (гермовводы, предохранитель) живут на высоте нижнего яруса:
+  // в корпусе-этажерке отверстия в стенках сделаны напротив плат питания.
+  var ENC_BASE = pbBoards.length ? floorY + 8 : TOP;
+  var ENC_CABLE = ENC_BASE + 3.4;       // высота кабеля между двумя стеночными узлами
+  // Межъярусные кабели идут по зазору между верхом БП и низом основной платы
+  var ENC_RUN = BOT - 5;
 
   var ENC_LINK_COLOR = { mains: rampHex('red'), power: rampHex('amber') };
   var ENC_LINK_RADIUS = { mains: 1.25, power: 0.95 };
@@ -1095,10 +1315,15 @@
     return /предохранит|fuse/i.test((node.label || '') + ' ' + (node.id || ''));
   }
 
-  // Точка привязки кабеля: либо внешний узел, либо компонент на плате.
+  // Точка привязки кабеля: стеночный узел, компонент нижнего яруса
+  // или компонент основной платы — в этом порядке.
   function encAnchor(id) {
     var n = byEnc[id];
     if (n && n.at) return { x: hx(n.at[0]), z: hz(n.at[1]), y: ENC_CABLE, outside: true };
+    if (powerAnchors[id]) {
+      var p = powerAnchors[id];
+      return { x: p.x, z: p.z, y: p.y, outside: false };
+    }
     var c = byComp[id];
     if (c && c.body) {
       var g = rectMetrics(c.body);
@@ -1123,60 +1348,60 @@
       // стеклянная вставка 5x20 с металлическими колпачками (лежит вдоль цепочки)
       var glass = cylMesh(2.9, 13, matStd(0xf0e4c0, { rough: 0.2, metal: 0.35, opacity: 0.62 }), 18);
       glass.rotation.z = Math.PI / 2;
-      glass.position.set(x, TOP + 3.4, z);
+      glass.position.set(x, ENC_BASE + 3.4, z);
       addE(glass);
       [-6.4, 6.4].forEach(function (dx) {
         var cap = cylMesh(3.0, 2.4, matStd(0xb9bec7, { rough: 0.3, metal: 0.85 }), 18);
         cap.rotation.z = Math.PI / 2;
-        cap.position.set(x + dx, TOP + 3.4, z);
+        cap.position.set(x + dx, ENC_BASE + 3.4, z);
         addE(cap);
       });
     } else if (node.id === 'E-PSU') {
       // блок питания: металлический корпус, маркировка, ряд винтовых клемм с торца
       var psu = boxMesh(ENC_W, ENC_H, ENC_D, matStd(0xaeb5bc, { rough: 0.35, metal: 0.7, opacity: 0.92 }));
-      psu.position.set(x, TOP + ENC_H / 2, z);
+      psu.position.set(x, ENC_BASE + ENC_H / 2, z);
       addE(psu);
       var psuLab = new THREE.Mesh(
         new THREE.PlaneGeometry(ENC_W * 0.8, ENC_D * 0.55),
         matStd(0xffffff, { rough: 0.5, map: textTex(['RS-15-12'], { bg: '#aeb5bc', fg: '#20242a', w: 256, h: 80, fs: 40 }) })
       );
       psuLab.rotation.x = -Math.PI / 2;
-      psuLab.position.set(x, TOP + ENC_H + 0.06, z);
+      psuLab.position.set(x, ENC_BASE + ENC_H + 0.06, z);
       addE(psuLab, false);
       for (var t = 0; t < 5; t++) {
         var term = cylMesh(0.95, 1.4, matStd(0x2e3237, { rough: 0.4, metal: 0.5 }), 10);
         term.rotation.x = Math.PI / 2;
-        term.position.set(x - ENC_W / 2 + 2.6 + t * ((ENC_W - 5.2) / 4), TOP + ENC_H * 0.35, z - ENC_D / 2);
+        term.position.set(x - ENC_W / 2 + 2.6 + t * ((ENC_W - 5.2) / 4), ENC_BASE + ENC_H * 0.35, z - ENC_D / 2);
         addE(term, false);
       }
     } else if (/^E-BLOCK/.test(node.id)) {
       // колодка ZK-316: полупрозрачный корпус + два латунных винта сверху
       var blk = boxMesh(ENC_W, ENC_H * 0.75, ENC_D, matStd(col, { rough: 0.6, opacity: 0.35 }));
-      blk.position.set(x, TOP + ENC_H * 0.375, z);
+      blk.position.set(x, ENC_BASE + ENC_H * 0.375, z);
       addE(blk);
       [-ENC_W * 0.22, ENC_W * 0.22].forEach(function (dx) {
         var sc = cylMesh(1.5, 0.9, matStd(0xc9a44a, { rough: 0.35, metal: 0.7 }), 12);
-        sc.position.set(x + dx, TOP + ENC_H * 0.75 + 0.45, z);
+        sc.position.set(x + dx, ENC_BASE + ENC_H * 0.75 + 0.45, z);
         addE(sc, false);
         var slot = boxMesh(2.2, 0.18, 0.45, matStd(0x14171c, { rough: 0.4 }));
-        slot.position.set(x + dx, TOP + ENC_H * 0.75 + 0.95, z);
+        slot.position.set(x + dx, ENC_BASE + ENC_H * 0.75 + 0.95, z);
         addE(slot, false);
       });
     } else if (node.id === 'E-MAINS') {
       // кабель-ввод: корпус гермоввода, гайка и кабель, уходящий наружу
       var gl = cylMesh(2.6, 8, matStd(0x9aa0a7, { rough: 0.35, metal: 0.6 }), 16);
       gl.rotation.z = Math.PI / 2;
-      gl.position.set(x + 1, TOP + 3.2, z);
+      gl.position.set(x + 1, ENC_BASE + 3.2, z);
       addE(gl);
       var nut = cylMesh(3.5, 2.4, matStd(0x84898f, { rough: 0.4, metal: 0.6 }), 6);
       nut.rotation.z = Math.PI / 2;
-      nut.position.set(x + 3.4, TOP + 3.2, z);
+      nut.position.set(x + 3.4, ENC_BASE + 3.2, z);
       addE(nut, false);
       var cable = new THREE.Mesh(
         new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
-          new THREE.Vector3(x - 3, TOP + 3.2, z),
-          new THREE.Vector3(x - 8, TOP + 2.6, z + 1.5),
-          new THREE.Vector3(x - 12, TOP + 1.2, z + 4)
+          new THREE.Vector3(x - 3, ENC_BASE + 3.2, z),
+          new THREE.Vector3(x - 8, ENC_BASE + 2.6, z + 1.5),
+          new THREE.Vector3(x - 12, ENC_BASE + 1.2, z + 4)
         ]), 24, 1.25, 8, false),
         matStd(0x1a1d21, { rough: 0.7 })
       );
@@ -1184,17 +1409,17 @@
     } else if (node.id === 'E-DRIVE') {
       // привод ворот: основание и два столбика-«ворота»
       var drvBase = boxMesh(ENC_W, 3, ENC_D, matStd(col, { rough: 0.7, opacity: 0.5 }));
-      drvBase.position.set(x, TOP + 1.5, z);
+      drvBase.position.set(x, ENC_BASE + 1.5, z);
       addE(drvBase);
       [-ENC_W * 0.26, ENC_W * 0.26].forEach(function (dx) {
         var post = boxMesh(2.4, 7, 2.4, matStd(0x9aa0a7, { rough: 0.5, metal: 0.3 }));
-        post.position.set(x + dx, TOP + 6.5, z);
+        post.position.set(x + dx, ENC_BASE + 6.5, z);
         addE(post);
       });
     } else {
       // неизвестный узел — прежний полупрозрачный блок
       var gen = boxMesh(ENC_W, ENC_H, ENC_D, matStd(col, { rough: 0.8, opacity: 0.26 }));
-      gen.position.set(x, TOP + ENC_H / 2, z);
+      gen.position.set(x, ENC_BASE + ENC_H / 2, z);
       addE(gen);
     }
 
@@ -1207,7 +1432,7 @@
         transparent: true, opacity: fuse ? 1 : 0.95
       })
     );
-    dash.position.set(x, TOP + ENC_H / 2, z);
+    dash.position.set(x, ENC_BASE + ENC_H / 2, z);
     dash.computeLineDistances();
     gEnclosure.add(dash);
     register(dash, { kind: 'enclosure', id: node.id });
@@ -1220,7 +1445,7 @@
       border: 'rgba(' + [col >> 16 & 255, col >> 8 & 255, col & 255].join(',') + ',0.85)',
       bg: 'rgba(9,12,17,0.78)'
     });
-    lab.position.set(x, TOP + ENC_H + 3.8 + (ni % 2) * 5.2, z);
+    lab.position.set(x, ENC_BASE + ENC_H + 3.8 + (ni % 2) * 5.2, z);
     gEnclosure.add(lab);
     register(lab, { kind: 'enclosure', id: node.id });
   });
@@ -1239,12 +1464,15 @@
         new THREE.Vector3(b.x, b.y, b.z)
       ];
     } else {
-      // кабель к плате — уходит вниз, под её нижнюю сторону
+      // Кабель между ярусами/стенкой: вертикаль у обоих концов и горизонтальный
+      // пробег в зазоре между верхом БП и низом основной платы — там пусто,
+      // и трасса не протыкает корпуса компонентов. Лёгкий развод по высоте.
+      var yRun = ENC_RUN - (idx % 4) * 1.1;
       pts = [
         new THREE.Vector3(a.x, a.y, a.z),
-        new THREE.Vector3(a.x, ENC_Y, a.z),
-        new THREE.Vector3((a.x + b.x) / 2, ENC_Y - 2, (a.z + b.z) / 2),
-        new THREE.Vector3(b.x, ENC_Y, b.z),
+        new THREE.Vector3(a.x, yRun, a.z),
+        new THREE.Vector3((a.x + b.x) / 2, yRun - 0.9, (a.z + b.z) / 2),
+        new THREE.Vector3(b.x, yRun, b.z),
         new THREE.Vector3(b.x, b.y, b.z)
       ];
     }
@@ -1274,6 +1502,49 @@
       register(ll, { kind: 'enclink', index: idx, from: link.from, to: link.to, linkClass: cls });
     }
   });
+
+  /* ------------------------------------------------------------------ */
+  /*  4c. Контур корпуса (параметры — из hardware/enclosure/case.scad)   */
+  /* ------------------------------------------------------------------ */
+
+  // Внутренние габариты 166x110x75, стенка 3, дно 3, крышка 3; основная плата
+  // отцентрована по внутреннему объёму, её низ — на stackGap над дном.
+  var CASE = { inX: 166, inZ2: 110, inZ: 75, wall: 3, floorT: 3, lidT: 3 };
+  var CASE_HX = (CASE.inX + CASE.wall * 2) / 2;
+  var CASE_HZ = (CASE.inZ2 + CASE.wall * 2) / 2;
+
+  var gCase = new THREE.Group();
+  root.add(gCase);
+  (function buildCase() {
+    var h = CASE.floorT + CASE.inZ + CASE.lidT;
+    var cy = floorY - CASE.floorT + h / 2;
+    var geo = new THREE.BoxGeometry(CASE_HX * 2, h, CASE_HZ * 2);
+    var shell = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+      color: 0x8fa3b8, roughness: 0.9, metalness: 0.05,
+      transparent: true, opacity: 0.06, depthWrite: false, side: THREE.DoubleSide
+    }));
+    shell.position.set(0, cy, 0);
+    gCase.add(shell);
+    var edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geo),
+      new THREE.LineDashedMaterial({ color: 0x7c8ea3, dashSize: 3, gapSize: 2, transparent: true, opacity: 0.7 })
+    );
+    edges.position.copy(shell.position);
+    edges.computeLineDistances();
+    gCase.add(edges);
+    // линия внутреннего дна — видно, на чём стоит нижний ярус
+    var fg = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-CASE.inX / 2, floorY, -CASE.inZ2 / 2),
+      new THREE.Vector3(CASE.inX / 2, floorY, -CASE.inZ2 / 2),
+      new THREE.Vector3(CASE.inX / 2, floorY, CASE.inZ2 / 2),
+      new THREE.Vector3(-CASE.inX / 2, floorY, CASE.inZ2 / 2),
+      new THREE.Vector3(-CASE.inX / 2, floorY, -CASE.inZ2 / 2)
+    ]);
+    var floorLine = new THREE.Line(fg,
+      new THREE.LineBasicMaterial({ color: 0x7c8ea3, transparent: true, opacity: 0.45 }));
+    gCase.add(floorLine);
+  })();
+  gCase.visible = false;   // слой «Корпус (контур)» по умолчанию выключен
 
   /* ------------------------------------------------------------------ */
   /*  5. Орбитальные контролы (свои, без OrbitControls из examples)      */
@@ -1428,9 +1699,16 @@
         b.x2 = Math.max(b.x2, x + ENC_W / 2 + 4);
         b.z1 = Math.min(b.z1, z - ENC_D / 2 - 4);
         b.z2 = Math.max(b.z2, z + ENC_D / 2 + 4);
-        b.y2 = Math.max(b.y2, TOP + ENC_H + 10);
+        b.y2 = Math.max(b.y2, ENC_BASE + ENC_H + 14);
       });
-      b.y1 = Math.min(b.y1, ENC_Y - 4);
+      b.y1 = Math.min(b.y1, ENC_BASE - 6);
+    }
+    if (pbBoards.length) b.y1 = Math.min(b.y1, floorY - 4);
+    if (gCase.visible) {
+      b.x1 = Math.min(b.x1, -CASE_HX - 2); b.x2 = Math.max(b.x2, CASE_HX + 2);
+      b.z1 = Math.min(b.z1, -CASE_HZ - 2); b.z2 = Math.max(b.z2, CASE_HZ + 2);
+      b.y1 = Math.min(b.y1, floorY - CASE.floorT - 2);
+      b.y2 = Math.max(b.y2, floorY + CASE.inZ + CASE.lidT + 2);
     }
     return b;
   }
@@ -1763,10 +2041,13 @@
     if (comp.mount) meta.push('крепление: ' + comp.mount);
     if (comp.fit === 'verify') meta.push('шаг выводов проверить прикладыванием');
 
+    var tier = compBoard[comp.id];
     var html = '<div class="info-title"><h3>' + esc(comp.label) + '</h3>' +
                '<span class="id">' + esc(comp.id) + '</span></div>' +
                '<div><span class="tag">' + esc(KIND_LABEL[comp.kind] || comp.kind || 'элемент') + '</span> ' +
-               '<span class="tag">высота ' + esc(g.h) + ' мм</span></div>' +
+               '<span class="tag">высота ' + esc(g.h) + ' мм</span>' +
+               (tier ? ' <span class="tag" style="border-color:' + RAMP.amber + '">нижний ярус · ' +
+                 esc(tier.boardLabel) + '</span>' : '') + '</div>' +
                '<div class="note" style="border-left-color:' + rampColor(comp.ramp) + '">' +
                '<b style="color:var(--text)">Посадочное место:</b> ' +
                'колонки ' + g.c1 + '–' + g.c2 + ', ряды ' + g.r1 + '–' + g.r2 +
@@ -1969,14 +2250,20 @@
   /* ---- списки цепей и компонентов ---- */
 
   function renderLists() {
-    var html = '';
-    (DATA.components || []).forEach(function (c) {
+    function compRow(c) {
       var on = selection && selection.type === 'component' && selection.id === c.id;
-      html += '<div class="row' + (on ? ' on' : '') + '" data-comp="' + esc(c.id) + '">' +
-              '<i class="sw" style="background:' + rampColor(c.ramp) + '"></i>' +
-              '<span class="nm">' + esc(c.label) + '</span>' +
-              '<span class="id">' + esc(c.id) + '</span></div>';
-    });
+      return '<div class="row' + (on ? ' on' : '') + '" data-comp="' + esc(c.id) + '">' +
+             '<i class="sw" style="background:' + rampColor(c.ramp) + '"></i>' +
+             '<span class="nm">' + esc(c.label) + '</span>' +
+             '<span class="id">' + esc(c.id) + '</span></div>';
+    }
+    var html = '';
+    if (powerComps.length) html += '<div class="list-sub">Основная плата</div>';
+    (DATA.components || []).forEach(function (c) { html += compRow(c); });
+    if (powerComps.length) {
+      html += '<div class="list-sub">Нижний ярус</div>';
+      powerComps.forEach(function (c) { html += compRow(c); });
+    }
     elComps.innerHTML = html;
 
     if (elEncl) {
@@ -2102,7 +2389,8 @@
     components: function () { return gComponents; },
     zones: function () { return gZones; },
     labels: function () { return gLabels; },
-    enclosure: function () { return gEnclosure; }
+    enclosure: function () { return gEnclosure; },
+    'case': function () { return gCase; }
   };
 
   function wireLayers() {
