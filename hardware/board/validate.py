@@ -81,13 +81,29 @@ def main() -> int:
                 + ", ".join(str(list(m)) for m in sorted(missed))
             )
 
-    # --- узлы в корпусе: связи ведут к существующим компонентам или узлам ---
+    # --- нижний ярус (powerBoards): геометрия каждой платы и уникальность id ---
     comp_ids = {c["id"] for c in d["components"]}
+    pb_ids = set()
+    for pboard in d.get("powerBoards", {}).get("boards", []):
+        pcols, prows = pboard["board"]["cols"], pboard["board"]["rows"]
+        for c in pboard["components"]:
+            pb_ids.add(c["id"])
+            x1, y1, x2, y2 = c["body"]
+            if not (1 <= x1 <= pcols and 1 <= x2 <= pcols and 1 <= y1 <= prows and 1 <= y2 <= prows):
+                errs.append(f"{pboard['id']} {c['id']}: тело за краем платы {c['body']}")
+            for p in c.get("pins", []):
+                col, row = p["hole"]
+                if not (1 <= col <= pcols and 1 <= row <= prows):
+                    errs.append(f"{pboard['id']} {c['id']}.{p['name']}: пин за краем {p['hole']}")
+    if pb_ids & comp_ids:
+        errs.append(f"id повторяются между ярусами: {pb_ids & comp_ids}")
+
+    # --- узлы в корпусе: связи ведут к существующим компонентам или узлам ---
     enc = d.get("enclosure", {})
     enc_ids = {n["id"] for n in enc.get("nodes", [])}
     for link in enc.get("links", []):
         for end in ("from", "to"):
-            if link[end] not in comp_ids | enc_ids:
+            if link[end] not in comp_ids | enc_ids | pb_ids:
                 errs.append(f"связь в корпусе ведёт в никуда: {link[end]}")
 
     # --- шаги сборки ссылаются на существующие объекты ---
