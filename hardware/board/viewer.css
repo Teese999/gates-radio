@@ -372,6 +372,32 @@ ul.routes .rn { color: var(--text-mute); display: block; margin-top: 3px; line-h
   .panel-left, .panel-right { max-height: 62vh; }
 }
 
+/* ---------- телефоны: панели превращаются в нижние шторки ---------- */
+
+#stage canvas { touch-action: none; }   /* жесты достаются сцене, а не браузеру */
+
+@media (max-width: 700px) {
+  #ui { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; gap: 8px; padding: 8px; }
+  .topbar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+  .topbar button { padding: 6px 9px; font-size: 12px; }
+  .brand b { font-size: 13px; }
+
+  /* обе панели — фиксированные шторки у нижнего края; в свёрнутом виде видна
+     только шапка, тап по ▾ раскрывает. Раскрытая уезжает поверх соседней. */
+  .panel-left, .panel-right {
+    position: fixed; left: 8px; right: 8px; top: auto; z-index: 40;
+    grid-column: auto; grid-row: auto;
+    max-height: 54vh;
+  }
+  .panel-right { bottom: 40px; }
+  .panel-left  { bottom: 86px; }
+  .panel-left:not(.collapsed), .panel-right:not(.collapsed) { z-index: 46; }
+  .panel .panel-head { cursor: pointer; }
+
+  .hud { font-size: 11px; padding: 6px 10px; gap: 8px; }
+  #hud-hover { display: none; }
+}
+
 /* сообщение об ошибке загрузки данных */
 .fatal {
   position: fixed; inset: 0; display: grid; place-items: center;

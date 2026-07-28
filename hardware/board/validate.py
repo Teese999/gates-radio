@@ -81,9 +81,13 @@ def main() -> int:
                 + ", ".join(str(list(m)) for m in sorted(missed))
             )
 
-    # --- краевые полосы: овальные пятачки попарно соединены, ставить туда нельзя ---
-    strip_cols = set(d["board"].get("edgeStrips", {}).get("cols", []))
-    strip_rows = set(d["board"].get("edgeStrips", {}).get("rows", []))
+    # --- краевые полосы: запрет только если соседние пятачки электрически
+    #     соединены (joined). У фактической платы овалы НЕЗАВИСИМЫ — ряды
+    #     с ними используются как обычные, проверка не нужна. ---
+    es = d["board"].get("edgeStrips", {})
+    joined = es.get("joined", True)
+    strip_cols = set(es.get("cols", [])) if joined else set()
+    strip_rows = set(es.get("rows", [])) if joined else set()
 
     def on_strip(col, row):
         return col in strip_cols or row in strip_rows

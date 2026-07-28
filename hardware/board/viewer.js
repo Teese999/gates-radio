@@ -56,7 +56,7 @@
   // кабеле — фаза (L) коричневая, ноль (N) синяя, вторая коммутируемая
   // фаза «закрыть» (L2) чёрная. Метка — поле conductor у mains-цепи
   // или у связи в корпусе.
-  var CONDUCTOR_COLOR = { L: 0x8a5a2b, N: 0x3d6fb4, L2: 0x33363c };
+  var CONDUCTOR_COLOR = { L: 0x8a5a2b, N: 0x3d6fb4, L2: 0x33363c, PE: 0x86a83d };
 
   var KIND_LABEL = {
     module: 'Модуль',
@@ -70,7 +70,9 @@
     junction: 'Узел пайки',
     psu: 'Блок питания',
     fuse: 'Держатель предохранителя',
-    'terminal-block': 'Клеммная колодка'
+    'terminal-block': 'Клеммная колодка',
+    testpoint: 'Точка прозвонки',
+    led: 'Светодиод'
   };
 
   // Как читается поле mount компонента в панели информации
@@ -118,10 +120,17 @@
   function rampColor(name) { return RAMP[name] || RAMP[DEFAULT_RAMP]; }
   function rampHex(name) { return parseInt(rampColor(name).slice(1), 16); }
   function netClass(cls) { return NET_CLASS[cls] || NET_CLASS_FALLBACK; }
-  // CSS-цвет цепи для интерфейса: сетевые жилы — по проводнику, остальные — по ramp
-  function netCss(n) {
+  /* Цвет цепи: сетевые жилы — по проводнику (как в реальном кабеле), у прочих
+     каждая ЛОГИЧЕСКАЯ цепь имеет свой цвет (net.color) — так провода различимы
+     при монтаже; ramp остаётся запасным вариантом для старых данных. */
+  function netHex(n) {
     var c = n && n['class'] === 'mains' && CONDUCTOR_COLOR[n.conductor];
-    return c ? '#' + ('00000' + c.toString(16)).slice(-6) : rampColor(n && n.ramp);
+    if (c) return c;
+    if (n && n.color) return parseInt(n.color.slice(1), 16);
+    return rampHex(n && n.ramp);
+  }
+  function netCss(n) {
+    return '#' + ('00000' + netHex(n).toString(16)).slice(-6);
   }
 
   // Индексы для быстрых поисков
@@ -144,7 +153,7 @@
   var stage = document.getElementById('stage');
 
   var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, window.innerWidth <= 700 ? 1.6 : 2));
   renderer.outputEncoding = THREE.sRGBEncoding;
   stage.appendChild(renderer.domElement);
 
@@ -324,27 +333,28 @@
     boardMesh.userData.padMat = padMat;
     boardMesh.userData.holeMat = holeMat;
 
-    /* Краевые полосы (board.edgeStrips): по узким краям платы вместо круглых
-       пятачков идут вытянутые овальные, попарно соединённые. Рисуем перемычку
-       между соседними кольцами пары — получается «капсула». Своих цепей на
-       этих колонках нет: соседние отверстия там electрически связаны. */
+    /* Краевые полосы (board.edgeStrips): по длинным краям платы пятачки
+       ОВАЛЬНЫЕ — вытянуты поперёк кромки (сверено с фото реальной платы) и
+       электрически НЕЗАВИСИМЫ, как обычные отверстия. Рисуем овальное кольцо
+       поверх штатного круглого пятачка с обеих сторон платы. */
     var es = B.edgeStrips;
     if (es) {
-      var barZ = new THREE.PlaneGeometry(1.92, PITCH);   // перемычка вдоль ряда
-      var barX = new THREE.PlaneGeometry(PITCH, 1.92);   // перемычка вдоль колонки
-      var addBar = function (x, z, geo) {
-        [[TOP + 0.012, -Math.PI / 2], [BOT - 0.012, Math.PI / 2]].forEach(function (s) {
-          var bar = new THREE.Mesh(geo, padMat);
-          bar.rotation.x = s[1];
-          bar.position.set(x, s[0], z);
-          gBoard.add(bar);
+      var ovalGeo = new THREE.RingGeometry(0.60, 0.96, 14);
+      var addOval = function (x, z, acrossRows) {
+        [[TOP + 0.016, -Math.PI / 2], [BOT - 0.016, Math.PI / 2]].forEach(function (s) {
+          var o = new THREE.Mesh(ovalGeo, padMat);
+          o.rotation.x = s[1];
+          // после поворота локальная Y ложится вдоль мировой Z (рядов)
+          o.scale.set(acrossRows ? 1 : 1.75, acrossRows ? 1.75 : 1, 1);
+          o.position.set(x, s[0], z);
+          gBoard.add(o);
         });
       };
-      (es.cols || []).forEach(function (c) {
-        for (var r = 1; r + 1 <= ROWS; r += 2) addBar(hx(c), (hz(r) + hz(r + 1)) / 2, barZ);
-      });
       (es.rows || []).forEach(function (r) {
-        for (var c = 1; c + 1 <= COLS; c += 2) addBar((hx(c) + hx(c + 1)) / 2, hz(r), barX);
+        for (var c = 1; c <= COLS; c++) addOval(hx(c), hz(r), true);
+      });
+      (es.cols || []).forEach(function (c2) {
+        for (var r2 = 1; r2 <= ROWS; r2++) addOval(hx(c2), hz(r2), false);
       });
     }
   })();
@@ -509,6 +519,29 @@
     gZones.add(lab);
     register(lab, { kind: 'zone', id: z.id });
   });
+
+  /* ------------------------------------------------------------------ */
+  /*  2b. Координатная линейка: колонки и ряды через каждые 5 отверстий  */
+  /*      Подписи висят ЗА краями платы — видны и сверху, и снизу.       */
+  /* ------------------------------------------------------------------ */
+
+  (function buildRuler() {
+    var opt = { size: 2.6, color: '#9aa4b2', bg: 'rgba(9,12,17,0.55)' };
+    function rl(text, x, z) {
+      var s = makeLabel(String(text), opt);
+      s.position.set(x, 0, z);
+      gLabels.add(s);
+      register(s, { kind: 'label' });
+    }
+    for (var c = 5; c <= COLS - 3; c += 5) {
+      rl(c, hx(c), -BOARD_D / 2 - 3.5);
+      rl(c, hx(c), BOARD_D / 2 + 3.5);
+    }
+    for (var r = 5; r <= ROWS - 3; r += 5) {
+      rl(r, -BOARD_W / 2 - 3.5, hz(r));
+      rl(r, BOARD_W / 2 + 3.5, hz(r));
+    }
+  })();
 
   /* ------------------------------------------------------------------ */
   /*  3. Компоненты                                                      */
@@ -1149,6 +1182,43 @@
     });
   }
 
+  /* --- Точка прозвонки: петля лужёной проволоки над пятачком ---------- */
+  function buildTestpoint(comp, g, y0, add) {
+    var loop = new THREE.Mesh(
+      new THREE.TorusGeometry(1.5, 0.35, 8, 20, Math.PI),
+      matStd(0xd6b45a, { rough: 0.3, metal: 0.85 })
+    );
+    loop.position.set(g.cx, y0 + 0.4, g.cz);
+    add(loop);
+  }
+
+  /* --- Светодиод 3 мм: цилиндр с куполом и ободком --------------------- */
+  function buildLed(comp, g, y0, add) {
+    var pins = (comp.pins || []).filter(function (p) { return p.hole; });
+    // корпус стоит над анодом (первая ножка), катод подгибается к своему пятачку
+    var cx = pins.length ? hx(pins[0].hole[0]) : g.cx;
+    var cz = pins.length ? hz(pins[0].hole[1]) : g.cz;
+    var body = cylMesh(1.5, 3.2, matStd(0xe53935, { rough: 0.3, opacity: 0.82 }), 16);
+    body.position.set(cx, y0 + 3.0, cz);
+    add(body);
+    var dome = new THREE.Mesh(
+      new THREE.SphereGeometry(1.5, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2),
+      matStd(0xff6f60, { rough: 0.25, opacity: 0.85 })
+    );
+    dome.position.set(cx, y0 + 4.6, cz);
+    add(dome);
+    var rim = cylMesh(1.85, 0.5, matStd(0xc62828, { rough: 0.4, opacity: 0.9 }), 16);
+    rim.position.set(cx, y0 + 1.6, cz);
+    add(rim, false);
+    // ножка к катоду
+    if (pins.length > 1) {
+      var kx = hx(pins[1].hole[0]), kz = hz(pins[1].hole[1]);
+      add(spanCylinder(new THREE.Vector3(cx, y0 + 1.4, cz),
+        new THREE.Vector3(kx, y0 + 0.3, kz), 0.28,
+        matStd(0xb9bec7, { rough: 0.3, metal: 0.85 }), 8), false);
+    }
+  }
+
   /* --- Узел пайки («звезда земли») ------------------------------------
      Не деталь, а несколько пятачков, спаянных обрезками лужёной проволоки
      по НИЖНЕЙ стороне платы: каждый луч уходит со своего пятачка. Поэтому
@@ -1376,6 +1446,8 @@
       case 'junction': return buildJunction(comp, g, baseY, add);
       case 'psu': return buildPsu(comp, g, baseY, add);
       case 'fuse': return buildFuse(comp, g, baseY, add);
+      case 'testpoint': return buildTestpoint(comp, g, baseY, add);
+      case 'led': return buildLed(comp, g, baseY, add);
     }
     genericBox(comp, g, baseY, add);   // неизвестный тип — прежний параллелепипед
   }
@@ -1635,8 +1707,7 @@
   (DATA.nets || []).forEach(function (net) {
     var cls = netClass(net['class']);
     var mains = net['class'] === 'mains';
-    // сетевые жилы красим как в реальном кабеле (поле conductor), остальное — по ramp
-    var col = (mains && CONDUCTOR_COLOR[net.conductor]) || rampHex(net.ramp);
+    var col = netHex(net);                                 // свой цвет у каждой цепи
     var jitter = (hashStr(net.id) % 3) * 0.62;             // разводим цепи по глубине
     var depth = cls.depth + jitter;
     var group = wireGroups[net['class']] || wireGroups.other;
@@ -1695,6 +1766,15 @@
           if (ez) pts.push(ez);
           pts.push(Z);
         }
+      } else if ((route.medium || 'wire') === 'trace') {
+        /* «Дорожка»: голая лужёная проволока, прижатая к плате и пропаянная
+           на КАЖДОМ пятачке по пути — прямые отрезки без провиса. */
+        var yT = BOT - 0.85;
+        pts.push(new THREE.Vector3(hx(path[0][0]), BOT - 0.15, hz(path[0][1])));
+        for (var t = 0; t < path.length; t++) {
+          pts.push(new THREE.Vector3(hx(path[t][0]), yT, hz(path[t][1])));
+        }
+        pts.push(new THREE.Vector3(hx(last[0]), BOT - 0.15, hz(last[1])));
       } else {
         var yRun = -depth;
 
@@ -1716,20 +1796,24 @@
         }
       }
 
-      var curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.25);
+      var isTrace = !aerial && (route.medium || 'wire') === 'trace';
+      var curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', isTrace ? 0.03 : 0.25);
       var seg = Math.max(32, pts.length * 10);
       var mesh = new THREE.Mesh(
-        new THREE.TubeGeometry(curve, seg, cls.radius, 7, false),
-        new THREE.MeshStandardMaterial({ color: col, roughness: 0.45, metalness: 0.12 })
+        new THREE.TubeGeometry(curve, seg, isTrace ? 0.5 : cls.radius, 7, false),
+        isTrace
+          ? new THREE.MeshStandardMaterial({ color: 0xcdd2da, roughness: 0.28, metalness: 0.85 })
+          : new THREE.MeshStandardMaterial({ color: col, roughness: 0.45, metalness: 0.12 })
       );
       group.add(mesh);
       register(mesh, { kind: 'net', id: net.id, routeIndex: ri }, { pick: true });
 
-      // капли припоя в точках пайки (у навесных жил — на верхней стороне платы)
+      // капли припоя: у дорожки — на каждом пятачке по пути, у провода — на концах
       var blobY = aerial ? TOP + 0.2 : BOT - 0.35;
-      [path[0], last].forEach(function (h) {
+      var blobHoles = isTrace ? pathAllHoles(path) : [path[0], last];
+      blobHoles.forEach(function (h) {
         var blob = new THREE.Mesh(
-          new THREE.SphereGeometry(cls.radius + 0.55, 10, 8),
+          new THREE.SphereGeometry((isTrace ? 0.5 : cls.radius) + 0.55, 10, 8),
           new THREE.MeshStandardMaterial({ color: 0xb9bec7, roughness: 0.28, metalness: 0.85 })
         );
         blob.scale.y = 0.6;
@@ -1739,6 +1823,57 @@
       });
     });
   });
+
+  /* Все отверстия на пути маршрута (для паек дорожки). */
+  function pathAllHoles(path) {
+    var out = [];
+    for (var i = 1; i < path.length; i++) {
+      var a = path[i - 1], b = path[i];
+      var dx = b[0] - a[0], dy = b[1] - a[1];
+      var g = gcd2(Math.abs(dx), Math.abs(dy)) || 1;
+      for (var k = (i === 1 ? 0 : 1); k <= g; k++) {
+        out.push([a[0] + dx / g * k, a[1] + dy / g * k]);
+      }
+    }
+    return out;
+  }
+  function gcd2(x, y) { while (y) { var t = x % y; x = y; y = t; } return x; }
+
+  /* --- Перекрёстки: точки, где изолированный провод проходит поверх другой
+     цепи. Наложений и общих паек в раскладке нет (см. lint_routes.py) —
+     остаются только такие точечные пересечения; помечаем их кольцами, чтобы
+     при монтаже было видно, где провод обязан лечь ПОВЕРХ, а не рядом. --- */
+  (function markCrossings() {
+    var holeNets = {};   // "c,r" -> { netId: 'end'|'pass' }
+    (DATA.nets || []).forEach(function (net) {
+      (net.routes || []).forEach(function (route) {
+        var path = route.path || [];
+        var vias = {};
+        path.forEach(function (p) { vias[p[0] + ',' + p[1]] = true; });
+        pathAllHoles(path).forEach(function (h) {
+          var key = h[0] + ',' + h[1];
+          var m = holeNets[key] = holeNets[key] || {};
+          var role = vias[key] ? 'end' : 'pass';
+          if (m[net.id] !== 'end') m[net.id] = role;
+        });
+      });
+    });
+    var mat = new THREE.MeshStandardMaterial({ color: 0xffb300, roughness: 0.5, metalness: 0.2 });
+    Object.keys(holeNets).forEach(function (key) {
+      var m = holeNets[key];
+      var ids = Object.keys(m);
+      if (ids.length !== 2) return;
+      if (m[ids[0]] === 'end' || m[ids[1]] === 'end') return;   // пайки исключены линтом
+      var cr = key.split(',');
+      var ring = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.16, 6, 20), mat);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.set(hx(+cr[0]), BOT - 0.45, hz(+cr[1]));
+      var n1 = byNet[ids[0]];
+      var grp = wireGroups[(n1 && n1['class']) || 'other'] || wireGroups.other;
+      grp.add(ring);
+      register(ring, { kind: 'net', id: ids[0], routeIndex: -1 });
+    });
+  })();
 
   /* ------------------------------------------------------------------ */
   /*  4b. Корпус: внешние узлы и кабели к плате                          */
@@ -2085,15 +2220,50 @@
 
     var self = this;
     var mode = 0, px = 0, py = 0;
+    // мультитач: карта активных пальцев; два пальца = пинч-зум + панорама
+    var touches = {};
+    var pinchDist = 0;
+
+    function touchList() {
+      return Object.keys(touches).map(function (k) { return touches[k]; });
+    }
+    function midAndDist() {
+      var t = touchList();
+      return {
+        x: (t[0].x + t[1].x) / 2, y: (t[0].y + t[1].y) / 2,
+        d: Math.hypot(t[0].x - t[1].x, t[0].y - t[1].y)
+      };
+    }
 
     function down(e) {
-      if (e.button === 2 || e.button === 1 || e.shiftKey) mode = 2; else mode = 1;
-      px = e.clientX; py = e.clientY;
+      touches[e.pointerId] = { x: e.clientX, y: e.clientY };
       self.anim = null;
       dom.setPointerCapture(e.pointerId);
+      var n = touchList().length;
+      if (n === 2) {
+        var m = midAndDist();
+        mode = 3; px = m.x; py = m.y; pinchDist = m.d;
+      } else if (n === 1) {
+        if (e.button === 2 || e.button === 1 || e.shiftKey) mode = 2; else mode = 1;
+        px = e.clientX; py = e.clientY;
+      }
     }
     function move(e) {
       if (!mode) return;
+      if (touches[e.pointerId]) {
+        touches[e.pointerId].x = e.clientX;
+        touches[e.pointerId].y = e.clientY;
+      }
+      if (mode === 3) {
+        if (touchList().length < 2) return;
+        var m = midAndDist();
+        if (pinchDist > 0 && m.d > 0) {
+          self.radius = Math.min(self.maxR, Math.max(self.minR, self.radius * pinchDist / m.d));
+        }
+        self.pan(m.x - px, m.y - py);
+        px = m.x; py = m.y; pinchDist = m.d;
+        return;
+      }
       var dx = e.clientX - px, dy = e.clientY - py;
       px = e.clientX; py = e.clientY;
       if (mode === 1) {
@@ -2104,7 +2274,14 @@
       }
     }
     function up(e) {
-      mode = 0;
+      delete touches[e.pointerId];
+      var t = touchList();
+      if (t.length === 1) {
+        // один палец остался — продолжаем вращение с него
+        mode = 1; px = t[0].x; py = t[0].y;
+      } else if (t.length === 0) {
+        mode = 0;
+      }
       try { dom.releasePointerCapture(e.pointerId); } catch (err) {}
     }
     dom.addEventListener('pointerdown', down);
@@ -2185,7 +2362,13 @@
     var pr = document.querySelector('.panel-right');
     if (top) r.y1 = top.getBoundingClientRect().bottom + pad;
     if (hud) r.y2 = hud.getBoundingClientRect().top - pad;
-    if (pl && pr) {
+    if (W <= 700) {
+      // телефон: панели — нижние шторки, сцена живёт над ними
+      var tops = [];
+      if (pl) tops.push(pl.getBoundingClientRect().top);
+      if (pr) tops.push(pr.getBoundingClientRect().top);
+      if (tops.length) r.y2 = Math.min(r.y2, Math.min.apply(null, tops) - pad);
+    } else if (pl && pr) {
       var a = pl.getBoundingClientRect(), b = pr.getBoundingClientRect();
       if (b.left - a.right > 260) { r.x1 = a.right + pad; r.x2 = b.left - pad; }
     }
@@ -2552,11 +2735,101 @@
   var elLegend = document.getElementById('legend');
 
   function setTab(name) {
-    ['steps', 'list', 'info'].forEach(function (n) {
+    ['steps', 'build', 'list', 'info'].forEach(function (n) {
       var b = document.querySelector('.tabs button[data-tab="' + n + '"]');
       var p = document.querySelector('.tab-pane[data-pane="' + n + '"]');
       if (b) b.classList.toggle('on', n === name);
       if (p) p.classList.toggle('on', n === name);
+    });
+  }
+
+  /* ---- вкладка «Монтаж»: чек-лист укладки с памятью в localStorage ---- */
+
+  var BUILD_KEY = 'smartgate-build-r3:';
+  var holePinName = {};
+  (DATA.components || []).forEach(function (c) {
+    (c.pins || []).forEach(function (p) {
+      if (p.hole) holePinName[p.hole[0] + ',' + p.hole[1]] = c.id + '.' + p.name;
+    });
+  });
+  function endName(h) {
+    return holePinName[h[0] + ',' + h[1]] || ('[' + h[0] + ',' + h[1] + ']');
+  }
+  function routeLenMM(path, medium) {
+    var l = 0;
+    for (var i = 1; i < path.length; i++) {
+      l += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]) * PITCH;
+    }
+    // запас: спуски к пятачкам, изгибы и зачистка — дорожке хватает малого
+    return Math.ceil((medium === 'trace' ? l + 8 : l * 1.15 + 32) / 5) * 5;
+  }
+  function buildItems() {
+    var items = [];
+    (DATA.nets || []).forEach(function (net) {
+      (net.routes || []).forEach(function (route, ri) {
+        var path = route.path || [];
+        if (path.length < 2) return;
+        items.push({
+          key: net.id + '#' + ri, net: net, ri: ri,
+          trace: (route.medium || 'wire') === 'trace',
+          from: endName(path[0]), to: endName(path[path.length - 1]),
+          len: routeLenMM(path, route.medium || 'wire'),
+          note: route.note || ''
+        });
+      });
+    });
+    return items;
+  }
+  function renderBuild() {
+    var elList = document.getElementById('build-list');
+    var elProg = document.getElementById('build-progress');
+    if (!elList) return;
+    var items = buildItems();
+    var done = items.filter(function (it) { return localStorage.getItem(BUILD_KEY + it.key) === '1'; }).length;
+    if (elProg) {
+      elProg.innerHTML = '<b style="color:var(--text)">Уложено ' + done + ' из ' + items.length + '</b>' +
+        ' <button class="ghost" id="build-reset" style="margin-left:8px">сбросить</button>' +
+        '<div style="color:var(--text-mute);font-size:11.5px;margin-top:4px">Порядок: сначала дорожки (голая лужёнка), потом провода. Клик по строке — подсветить цепь.</div>';
+    }
+    var groups = [
+      { title: 'Дорожки — голая лужёнка, паять первыми', filt: function (it) { return it.trace; } },
+      { title: 'Провода в изоляции', filt: function (it) { return !it.trace; } }
+    ];
+    var html = '';
+    groups.forEach(function (g2) {
+      var list = items.filter(g2.filt);
+      html += '<div class="section"><h4>' + g2.title + ' (' + list.length + ')</h4>';
+      list.forEach(function (it) {
+        var ck = localStorage.getItem(BUILD_KEY + it.key) === '1';
+        var sw = it.trace ? '#cdd2da' : netCss(it.net);
+        html += '<label class="check build-row" data-net="' + esc(it.net.id) + '" style="align-items:flex-start' + (ck ? ';opacity:.55' : '') + '">' +
+          '<input type="checkbox" data-build="' + esc(it.key) + '"' + (ck ? ' checked' : '') + '>' +
+          '<i class="sw" style="background:' + sw + ';margin-top:2px"></i>' +
+          '<span style="flex:1;min-width:0"><b style="font-weight:600">' + esc(it.from) + ' → ' + esc(it.to) + '</b>' +
+          ' <small>' + it.len + ' мм</small><br><small>' + esc(it.net.label) +
+          (it.note ? ' · ' + esc(it.note) : '') + '</small></span></label>';
+      });
+      html += '</div>';
+    });
+    elList.innerHTML = html;
+    elList.querySelectorAll('input[data-build]').forEach(function (cb) {
+      cb.addEventListener('change', function (e) {
+        localStorage.setItem(BUILD_KEY + cb.getAttribute('data-build'), cb.checked ? '1' : '0');
+        renderBuild();
+        e.stopPropagation();
+      });
+    });
+    elList.querySelectorAll('.build-row').forEach(function (row) {
+      row.addEventListener('click', function (e) {
+        if (e.target.tagName === 'INPUT') return;
+        selectNet(row.getAttribute('data-net'));
+        setTab('build');
+      });
+    });
+    var rst = document.getElementById('build-reset');
+    if (rst) rst.addEventListener('click', function () {
+      buildItems().forEach(function (it) { localStorage.removeItem(BUILD_KEY + it.key); });
+      renderBuild();
     });
   }
 
@@ -2637,7 +2910,7 @@
                '<div><span class="tag" style="border-color:' + netCss(net) + '">' +
                esc(cls.label) + '</span>' +
                (net.conductor ? ' <span class="tag" style="border-color:' + netCss(net) + '">жила ' +
-                 esc({ L: 'L — фаза, коричневая', L2: 'L2 — фаза «закрыть», чёрная', N: 'N — ноль, синяя' }[net.conductor] || net.conductor) + '</span>' : '') +
+                 esc({ L: 'L — фаза, коричневая', L2: 'L2 — фаза «закрыть», чёрная', N: 'N — ноль, синяя', PE: 'PE — земля, жёлто-зелёная' }[net.conductor] || net.conductor) + '</span>' : '') +
                (net.side ? ' <span class="tag" data-side="' + esc(net.side) + '">' +
                  (net.side === 'top' ? 'поверх платы, навесом' : 'под платой') + '</span>' : '') +
                (net.wire ? ' <span class="tag">' + esc(net.wire) + '</span>' : '') +
@@ -2647,7 +2920,10 @@
     var routes = net.routes || [];
     html += '<div class="section"><h4>Маршруты (' + routes.length + ')</h4><ul class="routes">';
     routes.forEach(function (r) {
-      html += '<li><span class="path">' + esc(pathText(r.path)) + '</span>' +
+      var med = (r.medium || 'wire') === 'trace'
+        ? '<span class="tag" style="border-color:#9aa0a7;color:#cdd2da">дорожка — голая лужёнка, пайка на каждом пятачке</span> '
+        : '<span class="tag">провод в изоляции</span> ';
+      html += '<li>' + med + '<span class="path">' + esc(pathText(r.path)) + '</span>' +
               (r.note ? '<span class="rn">' + esc(r.note) + '</span>' : '') + '</li>';
     });
     html += '</ul></div>';
@@ -3043,9 +3319,36 @@
     Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) {
       b.addEventListener('click', function () { setTab(b.getAttribute('data-tab')); });
     });
+    // Телефон: обе панели стартуют свёрнутыми шторками; раскрытие одной
+    // сворачивает другую, тап по шапке = тап по ▾.
+    var isMobile = window.matchMedia && window.matchMedia('(max-width: 700px)').matches;
+    var allPanels = document.querySelectorAll('.panel-left, .panel-right');
+    if (isMobile) {
+      Array.prototype.forEach.call(allPanels, function (p) { p.classList.add('collapsed'); });
+      Array.prototype.forEach.call(document.querySelectorAll('.panel-head'), function (head) {
+        head.addEventListener('click', function (e) {
+          if (e.target.closest('.collapse')) return;   // кнопка сама разберётся
+          var panel = head.closest('.panel');
+          var opening = panel.classList.contains('collapsed');
+          panel.classList.toggle('collapsed');
+          if (opening) {
+            Array.prototype.forEach.call(allPanels, function (p) {
+              if (p !== panel) p.classList.add('collapsed');
+            });
+          }
+        });
+      });
+    }
     Array.prototype.forEach.call(document.querySelectorAll('.panel-head .collapse'), function (b) {
       b.addEventListener('click', function () {
-        b.closest('.panel').classList.toggle('collapsed');
+        var panel = b.closest('.panel');
+        var opening = panel.classList.contains('collapsed');
+        panel.classList.toggle('collapsed');
+        if (isMobile && opening) {
+          Array.prototype.forEach.call(allPanels, function (p) {
+            if (p !== panel) p.classList.add('collapsed');
+          });
+        }
       });
     });
 
@@ -3157,6 +3460,7 @@
   renderLegend();
   renderLists();
   renderSteps();
+  renderBuild();
   showEmptyInfo();
   setTab('steps');
   resize();          // сначала размеры и аспект, потом подгон камеры под них

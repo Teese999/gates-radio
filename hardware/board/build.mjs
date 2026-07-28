@@ -125,6 +125,11 @@ ${css}
           <i class="sw" style="background:linear-gradient(135deg,#7F77DD,#1D9E75)"></i><span>Сигналы</span><small>SPI / UART</small></label>
         <label class="check"><input type="checkbox" data-layer="mains" checked>
           <i class="sw" style="background:#D4353B"></i><span>220 В</span><small>под платой, островок 220</small></label>
+        <div class="sub-legend">
+          <div><i class="sw" style="background:#cdd2da"></i><span>дорожка</span><small>голая лужёнка, пайка на каждом пятачке</small></div>
+          <div><i class="sw" style="background:transparent;border:2px solid #ffb300;border-radius:50%"></i><span>перекрёсток</span><small>изолированный провод проходит поверх</small></div>
+          <div><small style="display:block;margin-top:2px">каждая цепь — своим цветом и своей полосой: два провода нигде не делят коридор или пайку</small></div>
+        </div>
       </div>
       <div class="section">
         <h4>Сверху платы</h4>
@@ -144,6 +149,7 @@ ${css}
         <label class="check"><input type="checkbox" data-layer="case">
           <i class="sw" style="background:transparent;border:1px dashed #7c8ea3"></i><span>Корпус (контур)</span><small>160×110×46</small></label>
         <div class="sub-legend">
+          <div><i class="sw" style="background:#86A83D"></i><span>земля (PE)</span><small>жёлто-зелёная, парковка в клемме</small></div>
           <div><i class="sw" style="background:#8A5A2B"></i><span>фаза (L)</span><small>коричневый: предохранитель, реле, «открыть»</small></div>
           <div><i class="sw" style="background:#33363C"></i><span>жила «закрыть»</span><small>чёрная, фаза с контакта NO K2</small></div>
           <div><i class="sw" style="background:#3D6FB4"></i><span>ноль (N)</span><small>синий, без коммутации</small></div>
@@ -163,6 +169,7 @@ ${css}
     </div>
     <div class="tabs">
       <button data-tab="steps" class="on">Шаги</button>
+      <button data-tab="build">Монтаж</button>
       <button data-tab="list">Список</button>
       <button data-tab="info">Инфо</button>
     </div>
@@ -176,6 +183,11 @@ ${css}
         </div>
         <div id="steps"></div>
         <div class="step-detail" id="step-detail" style="display:none"></div>
+      </div>
+
+      <div class="tab-pane" data-pane="build">
+        <div id="build-progress" style="margin-bottom:8px"></div>
+        <div id="build-list"></div>
       </div>
 
       <div class="tab-pane" data-pane="list">

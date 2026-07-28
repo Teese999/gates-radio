@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Умные Ворота — документация железа</title>
+<style>
+  :root {
+    --bg: #0b0e13; --panel: #151a22; --line: #2a313c; --text: #e8ecf2;
+    --mute: #93a0b0; --accent: #4c9be8;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #eef1f5; --panel: #ffffff; --line: #d5dbe3; --text: #1a2028; --mute: #5c6a7a; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 16px 60px; background: var(--bg); color: var(--text);
+    font: 16px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  main { width: 100%; max-width: 640px; }
+  h1 { font-size: 26px; margin: 8px 0 4px; }
+  p.sub { color: var(--mute); margin: 0 0 26px; font-size: 14.5px; }
+  a.card {
+    display: block; text-decoration: none; color: var(--text);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    padding: 18px 20px; margin: 12px 0; transition: border-color .15s, transform .1s;
+  }
+  a.card:active { transform: scale(.99); }
+  a.card:hover { border-color: var(--accent); }
+  a.card b { font-size: 17px; display: flex; align-items: center; gap: 10px; }
+  a.card span { color: var(--mute); font-size: 14px; display: block; margin-top: 4px; }
+  .em { font-size: 22px; }
+  footer { color: var(--mute); font-size: 12.5px; margin-top: 26px; }
+  footer a { color: var(--accent); }
+</style>
+<main>
+  <h1>Умные Ворота</h1>
+  <p class="sub">ESP32 + CC1101 + SIM800L: приём RF-брелоков 300–928 МГц и открытие ворот
+  по звонку или SMS. Документация монтажа платы.</p>
+
+  <a class="card" href="hardware/board/index.html">
+    <b><span class="em">🧭</span> 3D-вьюер монтажной платы</b>
+    <span>Протоплата 100×150 со всеми модулями, однослойной разводкой по цветам,
+    шагами сборки и чек-листом монтажа. Работает на телефоне: панели-шторки,
+    пинч-зум, вращение пальцем.</span>
+  </a>
+
+  <a class="card" href="hardware/board/assembly-sheets.html">
+    <b><span class="em">🖨️</span> Печатные листы сборки</b>
+    <span>Нарезка проводов с длинами, зеркальный чертёж низа платы для пайки
+    и полный лист прозвонки. Распечатать — и к паяльнику.</span>
+  </a>
+
+  <a class="card" href="https://github.com/Teese999/gates-radio/blob/main/hardware/connections.md">
+    <b><span class="em">🔌</span> Электрическая схема и BOM</b>
+    <span>connections.md: дерево питания, цоколёвки, меры для 220 В на плате.</span>
+  </a>
+
+  <a class="card" href="https://github.com/Teese999/gates-radio">
+    <b><span class="em">📦</span> Репозиторий</b>
+    <span>Прошивка, веб-интерфейс, модель платы (board.json) и корпус под 3D-печать.</span>
+  </a>
+
+  <footer>Страница обновляется автоматически при каждом пуше в
+  <a href="https://github.com/Teese999/gates-radio">main</a>.</footer>
+</main>
+</html>
