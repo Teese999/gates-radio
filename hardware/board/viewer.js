@@ -1,0 +1,1802 @@
+/* =========================================================================
+   Умные Ворота — интерактивный 3D-вьюер монтажной платы.
+
+   Источник данных — board.json, который сборщик (build.mjs) инлайнит
+   в index.html как window.BOARD_DATA. Библиотека three.js подключается
+   как UMD-глобал THREE, орбитальные контролы — свои (см. Orbit).
+
+   Система координат:
+     колонка 1..cols -> ось X, ряд 1..rows -> ось Z, вверх -> ось Y.
+     x = (col-1)*pitch, z = (row-1)*pitch, плата центрирована в нуле.
+   ========================================================================= */
+
+(function () {
+  'use strict';
+
+  var DATA = window.BOARD_DATA;
+  if (!DATA || !DATA.board) {
+    document.body.innerHTML =
+      '<div class="fatal">Не найдены данные платы (window.BOARD_DATA).<br>' +
+      'Собери страницу заново: <b>node build.mjs</b></div>';
+    return;
+  }
+  if (typeof THREE === 'undefined') {
+    document.body.innerHTML =
+      '<div class="fatal">Не найдена библиотека three.js.<br>' +
+      'Положи UMD-сборку в vendor/three.min.js и пересобери: <b>node build.mjs</b></div>';
+    return;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Константы и справочники                                            */
+  /* ------------------------------------------------------------------ */
+
+  var RAMP = {
+    blue:   '#378ADD',
+    teal:   '#1D9E75',
+    purple: '#7F77DD',
+    amber:  '#BA7517',
+    coral:  '#D85A30',
+    red:    '#D4353B',
+    gray:   '#888780',
+    green:  '#639922'
+  };
+  var DEFAULT_RAMP = 'gray';
+
+  // Классы цепей: подпись, радиус провода (мм) и «этаж» разводки под платой.
+  var NET_CLASS = {
+    power:  { label: 'Питание',  radius: 0.78, depth: 4.8 },
+    gnd:    { label: 'Земля',    radius: 0.78, depth: 2.6 },
+    signal: { label: 'Сигнал',   radius: 0.42, depth: 7.0 },
+    mains:  { label: '220 В',    radius: 1.20, depth: 3.6 }
+  };
+  var NET_CLASS_FALLBACK = { label: 'Прочее', radius: 0.55, depth: 5.6 };
+
+  var KIND_LABEL = {
+    module: 'Модуль',
+    buck: 'Понижайка DC-DC',
+    relay: 'Реле',
+    transistor: 'Транзистор',
+    diode: 'Диод',
+    resistor: 'Резистор',
+    capacitor: 'Конденсатор',
+    terminal: 'Клеммник',
+    junction: 'Узел пайки'
+  };
+
+  var FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif';
+
+  var THEMES = {
+    dark:  { bg: 0x0b0e13, board: 0x1b4430, boardEdge: 0x0d2419, pad: 0xb98f3a, hole: 0x05070a,
+             hemiSky: 0x9fb6d0, hemiGround: 0x161b23, ambient: 0.22 },
+    light: { bg: 0xe9edf2, board: 0x27633f, boardEdge: 0x123322, pad: 0xd0a44a, hole: 0x141a16,
+             hemiSky: 0xffffff, hemiGround: 0xa8b4c2, ambient: 0.34 }
+  };
+
+  /* ------------------------------------------------------------------ */
+  /*  Геометрия платы                                                    */
+  /* ------------------------------------------------------------------ */
+
+  var B = DATA.board;
+  var COLS = B.cols || 58;
+  var ROWS = B.rows || 38;
+  var PITCH = B.pitch || 2.54;
+  var THICK = B.thickness || 1.6;
+
+  var OX = -((COLS - 1) * PITCH) / 2;   // сдвиг, чтобы плата стояла по центру сцены
+  var OZ = -((ROWS - 1) * PITCH) / 2;
+  var TOP = THICK / 2;                  // верхняя поверхность текстолита
+  var BOT = -THICK / 2;                 // нижняя поверхность
+
+  function hx(col) { return (col - 1) * PITCH + OX; }
+  function hz(row) { return (row - 1) * PITCH + OZ; }
+
+  var BOARD_W = COLS * PITCH;           // с полями по половине шага с каждой стороны
+  var BOARD_D = ROWS * PITCH;
+
+  function rampColor(name) { return RAMP[name] || RAMP[DEFAULT_RAMP]; }
+  function rampHex(name) { return parseInt(rampColor(name).slice(1), 16); }
+  function netClass(cls) { return NET_CLASS[cls] || NET_CLASS_FALLBACK; }
+
+  // Индексы для быстрых поисков
+  var byComp = {}, byNet = {}, byZone = {}, byEnc = {};
+  (DATA.components || []).forEach(function (c) { byComp[c.id] = c; });
+  (DATA.nets || []).forEach(function (n) { byNet[n.id] = n; });
+  (DATA.zones || []).forEach(function (z) { byZone[z.id] = z; });
+
+  // То, что живёт в корпусе рядом с платой (блок питания, колодки, ввод 220 В)
+  var ENC = DATA.enclosure || {};
+  var encNodes = ENC.nodes || [];
+  var encLinks = ENC.links || [];
+  encNodes.forEach(function (n) { byEnc[n.id] = n; });
+
+  /* ------------------------------------------------------------------ */
+  /*  Сцена                                                              */
+  /* ------------------------------------------------------------------ */
+
+  var theme = 'dark';
+  var stage = document.getElementById('stage');
+
+  var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  stage.appendChild(renderer.domElement);
+
+  var scene = new THREE.Scene();
+  // Узкий угол: перспектива мягче, плата читается ближе к чертёжной проекции
+  var camera = new THREE.PerspectiveCamera(30, 1, 0.5, 6000);
+
+  var hemi = new THREE.HemisphereLight(0xffffff, 0x222222, 0.55);
+  scene.add(hemi);
+  var ambient = new THREE.AmbientLight(0xffffff, 0.22);
+  scene.add(ambient);
+  var key = new THREE.DirectionalLight(0xffffff, 0.85);
+  key.position.set(90, 210, 130);
+  scene.add(key);
+  var rim = new THREE.DirectionalLight(0xcfe0ff, 0.30);
+  rim.position.set(-150, 120, -110);
+  scene.add(rim);
+  var under = new THREE.DirectionalLight(0xbcd0ff, 0.40);   // подсветка снизу — для вида на разводку
+  under.position.set(-40, -200, 60);
+  scene.add(under);
+
+  var root = new THREE.Group();
+  scene.add(root);
+
+  var gBoard = new THREE.Group();
+  var gZones = new THREE.Group();
+  var gComponents = new THREE.Group();
+  var gLabels = new THREE.Group();
+  var gWires = new THREE.Group();
+  var gEnclosure = new THREE.Group();   // узлы в корпусе + кабели к плате
+  root.add(gBoard, gZones, gWires, gComponents, gLabels, gEnclosure);
+
+  // Подгруппы проводов по классам цепей — их и переключают чекбоксы слоёв.
+  var wireGroups = {};
+  Object.keys(NET_CLASS).concat(['other']).forEach(function (k) {
+    wireGroups[k] = new THREE.Group();
+    gWires.add(wireGroups[k]);
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  Реестр объектов: подсветка/приглушение и пикинг                    */
+  /* ------------------------------------------------------------------ */
+
+  var shaded = [];       // всё, что умеет приглушаться
+  var pickables = [];    // всё, что ловит клик
+  var labelSprites = []; // текстовые спрайты — им подгоняется масштаб под зум
+
+  function register(obj, meta, opts) {
+    opts = opts || {};
+    obj.userData.meta = meta;
+    var m = obj.material;
+    if (m) {
+      obj.userData.base = {
+        opacity: m.opacity,
+        transparent: m.transparent,
+        depthWrite: m.depthWrite !== false,
+        emissive: m.emissive ? m.emissive.getHex() : 0,
+        hi: m.color ? m.color.clone().multiplyScalar(0.42).getHex() : 0x000000
+      };
+      shaded.push(obj);
+    }
+    if (opts.pick) pickables.push(obj);
+    return obj;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Текстовые подписи (canvas -> спрайт)                               */
+  /* ------------------------------------------------------------------ */
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function makeLabel(text, opt) {
+    opt = opt || {};
+    var fs = 58, pad = 20;
+    var cv = document.createElement('canvas');
+    var ctx = cv.getContext('2d');
+    ctx.font = '600 ' + fs + 'px ' + FONT_STACK;
+    var w = Math.ceil(ctx.measureText(text).width) + pad * 2;
+    var h = fs + pad * 2;
+    cv.width = w; cv.height = h;
+    ctx.font = '600 ' + fs + 'px ' + FONT_STACK;   // после resize контекст сбрасывается
+    ctx.textBaseline = 'middle';
+    roundRect(ctx, 2, 2, w - 4, h - 4, 18);
+    ctx.fillStyle = opt.bg || 'rgba(9,12,17,0.80)';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = opt.border || 'rgba(255,255,255,0.22)';
+    ctx.stroke();
+    ctx.fillStyle = opt.color || '#ffffff';
+    ctx.fillText(text, pad, h / 2 + 2);
+
+    var tex = new THREE.CanvasTexture(cv);
+    tex.encoding = THREE.sRGBEncoding;
+    tex.anisotropy = 4;
+    var mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: opt.depthTest !== false });
+    var sp = new THREE.Sprite(mat);
+    var H = opt.size || 4.4;
+    sp.scale.set(H * w / h, H, 1);
+    sp.userData.baseScale = { x: H * w / h, y: H };
+    labelSprites.push(sp);
+    return sp;
+  }
+
+  /* Подписи держим примерно постоянного экранного размера: при отдалении они
+     иначе превращаются в нечитаемые пиксели, при приближении — в баннеры. */
+  var LABEL_REF = 0;
+  var labelScale = 0;
+  function updateLabelScale() {
+    if (!LABEL_REF) return;
+    var k = Math.max(0.72, Math.min(1.8, orbit.radius / LABEL_REF));
+    if (Math.abs(k - labelScale) < 0.01) return;
+    labelScale = k;
+    for (var i = 0; i < labelSprites.length; i++) {
+      var s = labelSprites[i], b = s.userData.baseScale;
+      s.scale.set(b.x * k, b.y * k, 1);
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  1. Текстолит и сетка отверстий                                     */
+  /* ------------------------------------------------------------------ */
+
+  var boardMat = new THREE.MeshStandardMaterial({
+    color: THEMES.dark.board, roughness: 0.78, metalness: 0.06
+  });
+  var boardMesh = new THREE.Mesh(new THREE.BoxGeometry(BOARD_W, THICK, BOARD_D), boardMat);
+  gBoard.add(boardMesh);
+
+  var boardEdges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(boardMesh.geometry),
+    new THREE.LineBasicMaterial({ color: THEMES.dark.boardEdge, transparent: true, opacity: 0.75 })
+  );
+  gBoard.add(boardEdges);
+
+  // Отверстия рисуем инстансами: 4 InstancedMesh вместо 2204*4 мешей.
+  (function buildHoles() {
+    var n = COLS * ROWS;
+    var ringGeo = new THREE.RingGeometry(0.60, 0.96, 12);
+    var holeGeo = new THREE.CircleGeometry(0.62, 10);
+    var padMat = new THREE.MeshStandardMaterial({
+      color: THEMES.dark.pad, roughness: 0.42, metalness: 0.65, side: THREE.DoubleSide
+    });
+    var holeMat = new THREE.MeshBasicMaterial({ color: THEMES.dark.hole, side: THREE.DoubleSide });
+
+    var padTop = new THREE.InstancedMesh(ringGeo, padMat, n);
+    var padBot = new THREE.InstancedMesh(ringGeo, padMat, n);
+    var holTop = new THREE.InstancedMesh(holeGeo, holeMat, n);
+    var holBot = new THREE.InstancedMesh(holeGeo, holeMat, n);
+
+    var mUp = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+    var mDn = new THREE.Matrix4().makeRotationX(Math.PI / 2);
+    var m = new THREE.Matrix4();
+    var i = 0;
+    for (var r = 1; r <= ROWS; r++) {
+      for (var c = 1; c <= COLS; c++) {
+        var x = hx(c), z = hz(r);
+        m.copy(mUp).setPosition(x, TOP + 0.012, z); padTop.setMatrixAt(i, m);
+        m.copy(mUp).setPosition(x, TOP + 0.020, z); holTop.setMatrixAt(i, m);
+        m.copy(mDn).setPosition(x, BOT - 0.012, z); padBot.setMatrixAt(i, m);
+        m.copy(mDn).setPosition(x, BOT - 0.020, z); holBot.setMatrixAt(i, m);
+        i++;
+      }
+    }
+    [padTop, padBot, holTop, holBot].forEach(function (im) {
+      im.instanceMatrix.needsUpdate = true;
+      im.frustumCulled = false;
+      gBoard.add(im);
+    });
+    boardMesh.userData.padMat = padMat;
+    boardMesh.userData.holeMat = holeMat;
+  })();
+
+  // Крепёжные отверстия — крупные металлизированные кольца.
+  (DATA.board.mountingHoles || []).forEach(function (h) {
+    var geo = new THREE.RingGeometry(1.6, 2.6, 20);
+    var mat = new THREE.MeshStandardMaterial({
+      color: 0xc9ccd2, roughness: 0.35, metalness: 0.8, side: THREE.DoubleSide
+    });
+    [TOP + 0.03, BOT - 0.03].forEach(function (y, k) {
+      var ring = new THREE.Mesh(geo, mat);
+      ring.rotation.x = k === 0 ? -Math.PI / 2 : Math.PI / 2;
+      ring.position.set(hx(h[0]), y, hz(h[1]));
+      gBoard.add(ring);
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  2. Зоны                                                            */
+  /* ------------------------------------------------------------------ */
+
+  // Штриховка для keepout-зоны — генерируется на canvas, без внешних картинок.
+  function hatchTexture(color) {
+    var s = 64;
+    var cv = document.createElement('canvas');
+    cv.width = cv.height = s;
+    var ctx = cv.getContext('2d');
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.22;
+    ctx.fillRect(0, 0, s, s);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 9;
+    for (var i = -s; i < s * 2; i += 22) {
+      ctx.beginPath();
+      ctx.moveTo(i, 0);
+      ctx.lineTo(i + s, s);
+      ctx.stroke();
+    }
+    var tex = new THREE.CanvasTexture(cv);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.encoding = THREE.sRGBEncoding;
+    return tex;
+  }
+
+  function rectMetrics(rect) {
+    var c1 = Math.min(rect[0], rect[2]), c2 = Math.max(rect[0], rect[2]);
+    var r1 = Math.min(rect[1], rect[3]), r2 = Math.max(rect[1], rect[3]);
+    return {
+      c1: c1, r1: r1, c2: c2, r2: r2,
+      w: (c2 - c1 + 1) * PITCH,
+      d: (r2 - r1 + 1) * PITCH,
+      cx: (hx(c1) + hx(c2)) / 2,
+      cz: (hz(r1) + hz(r2)) / 2
+    };
+  }
+
+  (DATA.zones || []).forEach(function (z, idx) {
+    if (!z.rect) return;
+    var g = rectMetrics(z.rect);
+    var col = rampHex(z.ramp);
+    var keepout = z.kind === 'keepout';
+    var y = TOP + 0.06 + idx * 0.035;   // разные высоты, чтобы плоскости не мерцали
+
+    var matOpt = {
+      color: keepout ? 0xffffff : col,
+      transparent: true,
+      opacity: keepout ? 0.42 : 0.15,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    };
+    if (keepout) {
+      matOpt.map = hatchTexture(rampColor(z.ramp));
+      matOpt.map.repeat.set(g.w / 12, g.d / 12);
+    }
+    var plane = new THREE.Mesh(new THREE.PlaneGeometry(g.w, g.d), new THREE.MeshBasicMaterial(matOpt));
+    plane.rotation.x = -Math.PI / 2;
+    plane.position.set(g.cx, y, g.cz);
+    gZones.add(plane);
+    register(plane, { kind: 'zone', id: z.id }, { pick: true });
+
+    // рамка зоны
+    var hw = g.w / 2, hd = g.d / 2;
+    var pts = [
+      new THREE.Vector3(-hw, 0, -hd), new THREE.Vector3(hw, 0, -hd),
+      new THREE.Vector3(hw, 0, hd), new THREE.Vector3(-hw, 0, hd),
+      new THREE.Vector3(-hw, 0, -hd)
+    ];
+    var border = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: keepout ? 0.95 : 0.55 })
+    );
+    border.position.set(g.cx, y + 0.01, g.cz);
+    gZones.add(border);
+    register(border, { kind: 'zone', id: z.id });
+
+    var text = keepout ? '⚠ ' + z.label : z.label;
+    var lab = makeLabel(text, {
+      size: keepout ? 5.0 : 4.2,
+      color: keepout ? '#ffd7d8' : '#e9edf5',
+      border: 'rgba(' + [col >> 16 & 255, col >> 8 & 255, col & 255].join(',') + ',0.85)',
+      bg: keepout ? 'rgba(60,10,12,0.88)' : 'rgba(9,12,17,0.78)'
+    });
+    // подписи зон висят выше самых высоких корпусов, иначе их закрывают модули
+    lab.position.set(g.cx, TOP + (keepout ? 31 : 25), g.cz);
+    gZones.add(lab);
+    register(lab, { kind: 'zone', id: z.id });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  3. Компоненты                                                      */
+  /* ------------------------------------------------------------------ */
+
+  function compMetrics(comp) {
+    var body = comp.body || [1, 1, 1, 1];
+    var g = rectMetrics(body);
+    g.h = Math.max(comp.height || 3, 0.8);
+    return g;
+  }
+
+  function makeBodyMesh(comp, g, colorHex) {
+    var mat = new THREE.MeshStandardMaterial({
+      color: colorHex,
+      roughness: comp.kind === 'module' ? 0.72 : 0.55,
+      metalness: comp.kind === 'junction' ? 0.7 : 0.15
+    });
+    var mesh;
+    if (comp.kind === 'capacitor' && g.h >= 8) {
+      // электролит — цилиндр
+      var rad = Math.max(Math.min(g.w, g.d) / 2, 1.2);
+      mesh = new THREE.Mesh(new THREE.CylinderGeometry(rad, rad, g.h, 24), mat);
+    } else {
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(g.w, g.h, g.d), mat);
+    }
+    return mesh;
+  }
+
+  // Ставим цилиндр между двумя точками (ось геометрии — Y).
+  function spanCylinder(a, b, radius, mat, segs) {
+    var dir = new THREE.Vector3().subVectors(b, a);
+    var len = dir.length() || 0.1;
+    var mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, len, segs || 16), mat);
+    mesh.position.copy(a).addScaledVector(dir, 0.5);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    return mesh;
+  }
+
+  /* Антенна компонента: from -> to в координатах отверстий (могут быть за краем платы).
+     kind:"sma"  — жёсткий разъём + штырь вверх;
+     kind:"ipx"  — гибкий пигтейл, уходящий к стенке корпуса. */
+  function addAntenna(comp, grp, g, baseY) {
+    var a = comp.antenna;
+    if (!a || !a.from || !a.to) return;
+    var y = baseY + Math.max(g.h * 0.55, 3);
+    var from = new THREE.Vector3(hx(a.from[0]), y, hz(a.from[1]));
+    var to = new THREE.Vector3(hx(a.to[0]), y, hz(a.to[1]));
+    var gold = new THREE.MeshStandardMaterial({ color: 0xd8b64e, roughness: 0.3, metalness: 0.85 });
+    var add = function (mesh) {
+      grp.add(mesh);
+      register(mesh, { kind: 'component', id: comp.id }, { pick: true });
+    };
+
+    if (a.kind === 'ipx') {
+      // мягкий кабель: дуга с подъёмом и лёгким провисом на конце
+      var mid = from.clone().lerp(to, 0.5);
+      mid.y += 5;
+      var curve = new THREE.CatmullRomCurve3([
+        from,
+        from.clone().lerp(to, 0.25).setY(y + 3.5),
+        mid,
+        to.clone().setY(y + 1)
+      ]);
+      add(new THREE.Mesh(
+        new THREE.TubeGeometry(curve, 56, 0.75, 8, false),
+        new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 0.7, metalness: 0.1 })
+      ));
+      var end = curve.getPoint(1);
+      var dirN = new THREE.Vector3().subVectors(to, from).normalize();
+      add(spanCylinder(end.clone().addScaledVector(dirN, -3.5), end.clone().addScaledVector(dirN, 3.5), 1.8, gold, 14));
+      var pl = makeLabel('пигтейл IPX', { size: 3.3, color: '#9fd8c2' });
+      pl.position.set(end.x, end.y + 7, end.z);
+      gLabels.add(pl);
+      register(pl, { kind: 'label', compId: comp.id });
+    } else {
+      // жёсткий SMA: ствол разъёма + вертикальный штырь на конце
+      add(spanCylinder(from, to, 1.9, gold, 16));
+      var whip = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.95, 1.25, 26, 12),
+        new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: 0.55, metalness: 0.35 })
+      );
+      whip.position.set(to.x, to.y + 13, to.z);
+      add(whip);
+      var tip = makeLabel('антенна ' + String(a.kind || 'sma').toUpperCase(), { size: 3.3, color: '#d9c68a' });
+      tip.position.set(to.x, to.y + 30, to.z);
+      gLabels.add(tip);
+      register(tip, { kind: 'label', compId: comp.id });
+    }
+  }
+
+  (DATA.components || []).forEach(function (comp) {
+    var g = compMetrics(comp);
+    var colorHex = rampHex(comp.ramp);
+    var grp = new THREE.Group();
+    gComponents.add(grp);
+
+    var baseY = TOP;
+
+    // гнездо PBS под модулями — тонкая тёмная подложка
+    if (comp.socket) {
+      var sock = new THREE.Mesh(
+        new THREE.BoxGeometry(g.w + 0.4, 2.6, g.d + 0.4),
+        new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.85, metalness: 0.05 })
+      );
+      sock.position.set(g.cx, baseY + 1.3, g.cz);
+      grp.add(sock);
+      register(sock, { kind: 'component', id: comp.id }, { pick: true });
+      baseY += 2.6;
+    }
+
+    var body = makeBodyMesh(comp, g, colorHex);
+    body.position.set(g.cx, baseY + g.h / 2, g.cz);
+    grp.add(body);
+    register(body, { kind: 'component', id: comp.id }, { pick: true });
+
+    var edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(body.geometry),
+      new THREE.LineBasicMaterial({ color: 0x0b0e13, transparent: true, opacity: 0.45 })
+    );
+    edges.position.copy(body.position);
+    grp.add(edges);
+    register(edges, { kind: 'component', id: comp.id });
+
+    // ножки/пины
+    (comp.pins || []).forEach(function (p) {
+      if (!p.hole) return;
+      var pin = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.55, 0.55, 1.8, 8),
+        new THREE.MeshStandardMaterial({ color: 0xd6b45a, roughness: 0.35, metalness: 0.8 })
+      );
+      pin.position.set(hx(p.hole[0]), TOP + 0.9, hz(p.hole[1]));
+      grp.add(pin);
+      register(pin, { kind: 'pin', id: comp.id + ':' + p.name, compId: comp.id, netId: p.net, pinName: p.name },
+        { pick: true });
+    });
+
+    // Подпись компонента. У мелочи (резисторы, диоды, транзисторы) подпись
+    // постоянно висеть не должна — иначе центр платы превращается в кашу:
+    // такие показываем только при наведении или подсветке.
+    var minor = g.h < 8;
+    var lab = makeLabel(comp.label || comp.id, { size: minor ? 3.2 : 4.0 });
+    lab.position.set(g.cx, baseY + g.h + (minor ? 2.6 : 3.6), g.cz);
+    lab.visible = !minor;
+    gLabels.add(lab);
+    register(lab, { kind: 'label', compId: comp.id, minor: minor });
+
+    // Антенна/пигтейл — строго по полю antenna в board.json
+    if (comp.antenna) addAntenna(comp, grp, g, baseY);
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  4. Провода снизу платы                                             */
+  /* ------------------------------------------------------------------ */
+
+  function hashStr(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return h;
+  }
+
+  function onEdge(hole) {
+    return hole[0] <= 1 || hole[0] >= COLS || hole[1] <= 1 || hole[1] >= ROWS;
+  }
+
+  // Точка «уходит за край платы» — продлеваем последний отрезок наружу.
+  function offBoardPoint(prev, last, y) {
+    var dx = last[0] - prev[0], dy = last[1] - prev[1];
+    if (dx === 0 && dy === 0) dx = -1;
+    var len = Math.hypot(dx, dy) || 1;
+    return new THREE.Vector3(hx(last[0]) + (dx / len) * 12, y, hz(last[1]) + (dy / len) * 12);
+  }
+
+  (DATA.nets || []).forEach(function (net) {
+    var cls = netClass(net['class']);
+    var col = rampHex(net.ramp);
+    var jitter = (hashStr(net.id) % 3) * 0.62;             // разводим цепи по глубине
+    var depth = cls.depth + jitter;
+    var group = wireGroups[net['class']] || wireGroups.other;
+
+    (net.routes || []).forEach(function (route, ri) {
+      var path = route.path || [];
+      if (path.length < 2) return;
+
+      var pts = [];
+      var yRun = -depth;
+
+      // вертикальный «хвостик» от пятачка вниз, на уровень разводки
+      pts.push(new THREE.Vector3(hx(path[0][0]), BOT - 0.2, hz(path[0][1])));
+      pts.push(new THREE.Vector3(hx(path[0][0]), yRun, hz(path[0][1])));
+
+      for (var i = 1; i < path.length; i++) {
+        var a = path[i - 1], b = path[i];
+        // лёгкий провис в середине отрезка, чтобы пересечения читались
+        pts.push(new THREE.Vector3((hx(a[0]) + hx(b[0])) / 2, yRun - 0.55, (hz(a[1]) + hz(b[1])) / 2));
+        pts.push(new THREE.Vector3(hx(b[0]), yRun, hz(b[1])));
+      }
+
+      var last = path[path.length - 1];
+      if (net.offBoard && onEdge(last)) {
+        pts.push(offBoardPoint(path[path.length - 2], last, yRun));
+      } else {
+        pts.push(new THREE.Vector3(hx(last[0]), BOT - 0.2, hz(last[1])));
+      }
+
+      var curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.25);
+      var seg = Math.max(32, pts.length * 10);
+      var mesh = new THREE.Mesh(
+        new THREE.TubeGeometry(curve, seg, cls.radius, 7, false),
+        new THREE.MeshStandardMaterial({ color: col, roughness: 0.45, metalness: 0.12 })
+      );
+      group.add(mesh);
+      register(mesh, { kind: 'net', id: net.id, routeIndex: ri }, { pick: true });
+
+      // капли припоя в точках пайки
+      [path[0], last].forEach(function (h) {
+        var blob = new THREE.Mesh(
+          new THREE.SphereGeometry(cls.radius + 0.55, 10, 8),
+          new THREE.MeshStandardMaterial({ color: 0xb9bec7, roughness: 0.28, metalness: 0.85 })
+        );
+        blob.scale.y = 0.6;
+        blob.position.set(hx(h[0]), BOT - 0.35, hz(h[1]));
+        group.add(blob);
+        register(blob, { kind: 'net', id: net.id, routeIndex: ri }, { pick: true });
+      });
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  4b. Корпус: внешние узлы и кабели к плате                          */
+  /* ------------------------------------------------------------------ */
+
+  var ENC_W = 7 * PITCH;      // габарит блока-«призрака» — уже шага между узлами,
+  var ENC_D = 5 * PITCH;      // чтобы кабели между ними не слипались
+  var ENC_H = 9;
+  var ENC_CABLE = TOP + ENC_H * 0.45;   // высота кабеля между двумя внешними узлами
+  var ENC_Y = -11;                      // глубина кабеля к плате (ниже всей разводки)
+
+  var ENC_LINK_COLOR = { mains: rampHex('red'), power: rampHex('amber') };
+  var ENC_LINK_RADIUS = { mains: 1.25, power: 0.95 };
+  var encLinkLabels = [];               // подписи кабелей — показываем при наведении/выборе
+
+  // Предохранитель рисуем не коробкой, а стеклянной вставкой: он маленький,
+  // но через него проходит фаза ДО всего остального — это должно быть видно.
+  function isFuseNode(node) {
+    return /предохранит|fuse/i.test((node.label || '') + ' ' + (node.id || ''));
+  }
+
+  // Точка привязки кабеля: либо внешний узел, либо компонент на плате.
+  function encAnchor(id) {
+    var n = byEnc[id];
+    if (n && n.at) return { x: hx(n.at[0]), z: hz(n.at[1]), y: ENC_CABLE, outside: true };
+    var c = byComp[id];
+    if (c && c.body) {
+      var g = rectMetrics(c.body);
+      return { x: g.cx, z: g.cz, y: BOT - 0.3, outside: false };
+    }
+    return null;
+  }
+
+  encNodes.forEach(function (node, ni) {
+    if (!node.at) return;
+    var x = hx(node.at[0]), z = hz(node.at[1]);
+    var col = rampHex(node.ramp);
+    var fuse = isFuseNode(node);
+    var mat = new THREE.MeshStandardMaterial({
+      color: fuse ? 0xf0e4c0 : col, roughness: fuse ? 0.2 : 0.8, metalness: fuse ? 0.35 : 0.05,
+      transparent: true, opacity: fuse ? 0.62 : 0.26, depthWrite: false
+    });
+
+    var body;
+    if (fuse) {
+      body = new THREE.Mesh(new THREE.CylinderGeometry(2.9, 2.9, 13, 18), mat);
+      body.rotation.z = Math.PI / 2;                 // вставка лежит вдоль цепочки
+      body.position.set(x, TOP + 3.4, z);
+      // металлические колпачки по краям
+      [-6.4, 6.4].forEach(function (dx) {
+        var cap = new THREE.Mesh(
+          new THREE.CylinderGeometry(3.0, 3.0, 2.4, 18),
+          new THREE.MeshStandardMaterial({ color: 0xb9bec7, roughness: 0.3, metalness: 0.85 })
+        );
+        cap.rotation.z = Math.PI / 2;
+        cap.position.set(x + dx, TOP + 3.4, z);
+        gEnclosure.add(cap);
+        register(cap, { kind: 'enclosure', id: node.id }, { pick: true });
+      });
+    } else {
+      body = new THREE.Mesh(new THREE.BoxGeometry(ENC_W, ENC_H, ENC_D), mat);
+      body.position.set(x, TOP + ENC_H / 2, z);
+    }
+    gEnclosure.add(body);
+    register(body, { kind: 'enclosure', id: node.id }, { pick: true });
+
+    // пунктирная рамка — знак того, что узел не на плате
+    var frame = new THREE.Mesh(new THREE.BoxGeometry(ENC_W, ENC_H, ENC_D));
+    var dash = new THREE.LineSegments(
+      new THREE.EdgesGeometry(frame.geometry),
+      new THREE.LineDashedMaterial({
+        color: fuse ? 0xffd166 : col, dashSize: 2.2, gapSize: 1.6,
+        transparent: true, opacity: fuse ? 1 : 0.95
+      })
+    );
+    dash.position.set(x, TOP + ENC_H / 2, z);
+    dash.computeLineDistances();
+    gEnclosure.add(dash);
+    register(dash, { kind: 'enclosure', id: node.id });
+    frame.geometry.dispose();
+
+    // подписи ставим в шахматном порядке — иначе соседние наезжают друг на друга
+    var lab = makeLabel(node.label, {
+      size: 3.6,
+      color: fuse ? '#ffe6a8' : '#e9edf5',
+      border: 'rgba(' + [col >> 16 & 255, col >> 8 & 255, col & 255].join(',') + ',0.85)',
+      bg: 'rgba(9,12,17,0.78)'
+    });
+    lab.position.set(x, TOP + ENC_H + 3.8 + (ni % 2) * 5.2, z);
+    gEnclosure.add(lab);
+    register(lab, { kind: 'enclosure', id: node.id });
+  });
+
+  encLinks.forEach(function (link, idx) {
+    var a = encAnchor(link.from), b = encAnchor(link.to);
+    if (!a || !b) return;   // ссылка в никуда — молча пропускаем
+    var cls = link['class'] === 'power' ? 'power' : 'mains';
+    var pts;
+
+    if (a.outside && b.outside) {
+      // кабель между двумя узлами в корпусе — идёт по воздуху на их же высоте
+      pts = [
+        new THREE.Vector3(a.x, a.y, a.z),
+        new THREE.Vector3((a.x + b.x) / 2, a.y - 1.6, (a.z + b.z) / 2),
+        new THREE.Vector3(b.x, b.y, b.z)
+      ];
+    } else {
+      // кабель к плате — уходит вниз, под её нижнюю сторону
+      pts = [
+        new THREE.Vector3(a.x, a.y, a.z),
+        new THREE.Vector3(a.x, ENC_Y, a.z),
+        new THREE.Vector3((a.x + b.x) / 2, ENC_Y - 2, (a.z + b.z) / 2),
+        new THREE.Vector3(b.x, ENC_Y, b.z),
+        new THREE.Vector3(b.x, b.y, b.z)
+      ];
+    }
+
+    var curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.2);
+    var tube = new THREE.Mesh(
+      new THREE.TubeGeometry(curve, 60, ENC_LINK_RADIUS[cls], 7, false),
+      new THREE.MeshStandardMaterial({ color: ENC_LINK_COLOR[cls], roughness: 0.5, metalness: 0.1 })
+    );
+    gEnclosure.add(tube);
+    register(tube, { kind: 'enclink', index: idx, from: link.from, to: link.to, linkClass: cls }, { pick: true });
+
+    if (link.label) {
+      var mid = curve.getPoint(0.5);
+      var ll = makeLabel(link.label, {
+        size: 3.2,
+        color: cls === 'power' ? '#ffd9a0' : '#ffc9cb',
+        border: 'rgba(' + [ENC_LINK_COLOR[cls] >> 16 & 255, ENC_LINK_COLOR[cls] >> 8 & 255,
+          ENC_LINK_COLOR[cls] & 255].join(',') + ',0.9)',
+        bg: 'rgba(9,12,17,0.86)'
+      });
+      ll.position.set(mid.x, mid.y + 4.5, mid.z);
+      ll.visible = false;
+      gEnclosure.add(ll);
+      encLinkLabels.push(ll);
+      register(ll, { kind: 'enclink', index: idx, from: link.from, to: link.to, linkClass: cls });
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  5. Орбитальные контролы (свои, без OrbitControls из examples)      */
+  /* ------------------------------------------------------------------ */
+
+  function Orbit(cam, dom) {
+    this.cam = cam;
+    this.dom = dom;
+    this.target = new THREE.Vector3(0, 0, 0);
+    this.radius = 260;
+    this.theta = -0.62;   // азимут
+    this.phi = 0.92;      // полярный угол
+    this.minR = 45;
+    this.maxR = 1800;
+    this.EPS = 0.02;
+    this.anim = null;
+
+    var self = this;
+    var mode = 0, px = 0, py = 0;
+
+    function down(e) {
+      if (e.button === 2 || e.button === 1 || e.shiftKey) mode = 2; else mode = 1;
+      px = e.clientX; py = e.clientY;
+      self.anim = null;
+      dom.setPointerCapture(e.pointerId);
+    }
+    function move(e) {
+      if (!mode) return;
+      var dx = e.clientX - px, dy = e.clientY - py;
+      px = e.clientX; py = e.clientY;
+      if (mode === 1) {
+        self.theta -= dx * 0.0055;
+        self.phi = Math.min(Math.PI - self.EPS, Math.max(self.EPS, self.phi - dy * 0.0055));
+      } else {
+        self.pan(dx, dy);
+      }
+    }
+    function up(e) {
+      mode = 0;
+      try { dom.releasePointerCapture(e.pointerId); } catch (err) {}
+    }
+    dom.addEventListener('pointerdown', down);
+    dom.addEventListener('pointermove', move);
+    dom.addEventListener('pointerup', up);
+    dom.addEventListener('pointercancel', up);
+    dom.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    dom.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      self.anim = null;
+      var k = Math.pow(0.94, -e.deltaY * 0.012);
+      self.radius = Math.min(self.maxR, Math.max(self.minR, self.radius * k));
+    }, { passive: false });
+  }
+
+  Orbit.prototype.pan = function (dx, dy) {
+    // сдвиг цели в плоскости экрана, масштаб зависит от дистанции
+    var k = this.radius * 0.0018;
+    var right = new THREE.Vector3();
+    var up = new THREE.Vector3();
+    this.cam.matrixWorld.extractBasis(right, up, new THREE.Vector3());
+    this.target.addScaledVector(right, -dx * k);
+    this.target.addScaledVector(up, dy * k);
+  };
+
+  Orbit.prototype.goTo = function (o, ms) {
+    var self = this;
+    // выбираем кратчайший путь по азимуту
+    var t1 = o.theta !== undefined ? o.theta : this.theta;
+    while (t1 - this.theta > Math.PI) t1 -= Math.PI * 2;
+    while (this.theta - t1 > Math.PI) t1 += Math.PI * 2;
+    this.anim = {
+      t0: performance.now(),
+      ms: ms || 620,
+      from: { r: this.radius, th: this.theta, ph: this.phi, tg: this.target.clone() },
+      to: {
+        r: o.radius !== undefined ? o.radius : this.radius,
+        th: t1,
+        ph: o.phi !== undefined ? o.phi : this.phi,
+        tg: o.target ? o.target.clone() : this.target.clone()
+      }
+    };
+  };
+
+  Orbit.prototype.update = function () {
+    if (this.anim) {
+      var k = (performance.now() - this.anim.t0) / this.anim.ms;
+      if (k >= 1) { k = 1; }
+      var e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;   // easeInOutCubic
+      var a = this.anim;
+      this.radius = a.from.r + (a.to.r - a.from.r) * e;
+      this.theta = a.from.th + (a.to.th - a.from.th) * e;
+      this.phi = a.from.ph + (a.to.ph - a.from.ph) * e;
+      this.target.lerpVectors(a.from.tg, a.to.tg, e);
+      if (k === 1) this.anim = null;
+    }
+    var sp = Math.sin(this.phi), cp = Math.cos(this.phi);
+    this.cam.position.set(
+      this.target.x + this.radius * sp * Math.sin(this.theta),
+      this.target.y + this.radius * cp,
+      this.target.z + this.radius * sp * Math.cos(this.theta)
+    );
+    this.cam.lookAt(this.target);
+  };
+
+  var orbit = new Orbit(camera, renderer.domElement);
+
+  /* --- кадрирование: плата должна целиком попадать в свободную область --- */
+
+  // Свободный прямоугольник экрана — между боковыми панелями, шапкой и нижней строкой.
+  function freeRect() {
+    var W = window.innerWidth, H = window.innerHeight;
+    var pad = 12;
+    var r = { x1: pad, y1: pad, x2: W - pad, y2: H - pad };
+    var top = document.querySelector('.topbar');
+    var hud = document.querySelector('.hud');
+    var pl = document.querySelector('.panel-left');
+    var pr = document.querySelector('.panel-right');
+    if (top) r.y1 = top.getBoundingClientRect().bottom + pad;
+    if (hud) r.y2 = hud.getBoundingClientRect().top - pad;
+    if (pl && pr) {
+      var a = pl.getBoundingClientRect(), b = pr.getBoundingClientRect();
+      if (b.left - a.right > 260) { r.x1 = a.right + pad; r.x2 = b.left - pad; }
+    }
+    if (r.x2 - r.x1 < 120) { r.x1 = pad; r.x2 = W - pad; }
+    if (r.y2 - r.y1 < 120) { r.y1 = pad; r.y2 = H - pad; }
+    return r;
+  }
+
+  // Смещаем ось камеры так, чтобы центр платы попадал в центр свободной области.
+  function updateViewOffset() {
+    var W = window.innerWidth, H = window.innerHeight;
+    var r = freeRect();
+    var cx = (r.x1 + r.x2) / 2, cy = (r.y1 + r.y2) / 2;
+    camera.setViewOffset(W, H, W / 2 - cx, cy - H / 2, W, H);
+  }
+
+  /* Габаритная «коробка» сцены: плата + запас на антенны и провода снизу.
+     Если показаны внешние узлы корпуса — коробка расширяется до них.
+     Коробка несимметричная (узлы висят слева и снизу), поэтому камера целится
+     в её центр, а не в центр платы — иначе половина кадра уходит в пустоту. */
+  function fitBox() {
+    var b = {
+      x1: -BOARD_W / 2 - 16, x2: BOARD_W / 2 + 16,
+      y1: -14, y2: 26,
+      z1: -BOARD_D / 2 - 6, z2: BOARD_D / 2 + 6
+    };
+    if (gEnclosure.visible) {
+      encNodes.forEach(function (n) {
+        if (!n.at) return;
+        var x = hx(n.at[0]), z = hz(n.at[1]);
+        b.x1 = Math.min(b.x1, x - ENC_W / 2 - 4);
+        b.x2 = Math.max(b.x2, x + ENC_W / 2 + 4);
+        b.z1 = Math.min(b.z1, z - ENC_D / 2 - 4);
+        b.z2 = Math.max(b.z2, z + ENC_D / 2 + 4);
+        b.y2 = Math.max(b.y2, TOP + ENC_H + 10);
+      });
+      b.y1 = Math.min(b.y1, ENC_Y - 4);
+    }
+    return b;
+  }
+
+  function fitCenter() {
+    var b = fitBox();
+    return new THREE.Vector3((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2, (b.z1 + b.z2) / 2);
+  }
+
+  // Дистанция камеры, при которой коробка целиком влезает в свободную область.
+  function fitRadius(theta, phi) {
+    var W = window.innerWidth, H = window.innerHeight;
+    var r = freeRect();
+    var fx = (r.x2 - r.x1) / W, fy = (r.y2 - r.y1) / H;
+    var tanV = Math.tan((camera.fov * Math.PI / 180) / 2);
+    var halfH = tanV * fy;                       // тангенс половины угла по вертикали
+    var halfW = tanV * (W / H) * fx;             // ...и по горизонтали
+    var sp = Math.sin(phi), cp = Math.cos(phi);
+    var eye = new THREE.Vector3(sp * Math.sin(theta), cp, sp * Math.cos(theta));
+    var right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), eye).normalize();
+    if (!isFinite(right.x) || right.lengthSq() < 0.5) right.set(1, 0, 0);
+    var up = new THREE.Vector3().crossVectors(eye, right).normalize();
+
+    var box = fitBox();
+    var c = fitCenter();
+    var d = 40;
+    var p = new THREE.Vector3();
+    [box.x1, box.x2].forEach(function (x) {
+      [box.z1, box.z2].forEach(function (z) {
+        [box.y1, box.y2].forEach(function (y) {
+          p.set(x - c.x, y - c.y, z - c.z);      // координаты относительно цели камеры
+          d = Math.max(d,
+            p.dot(eye) + Math.abs(p.dot(right)) / halfW,
+            p.dot(eye) + Math.abs(p.dot(up)) / halfH);
+        });
+      });
+    });
+    return Math.min(orbit.maxR, d * 1.02);
+  }
+
+  // Радиус «плата ровно в кадре» для текущих углов — база, от которой считается зум пользователя.
+  var fitBase = 0;
+
+  // Пересчёт кадрирования при изменении размера окна: сохраняем относительный зум,
+  // иначе после сужения окна плата вылезает за края.
+  function refit() {
+    var ratio = fitBase > 0 ? (orbit.anim ? orbit.anim.to.r : orbit.radius) / fitBase : 1;
+    fitBase = fitRadius(orbit.theta, orbit.phi);
+    var r = Math.min(orbit.maxR, Math.max(orbit.minR, fitBase * ratio));
+    if (orbit.anim) orbit.anim.to.r = r; else orbit.radius = r;
+  }
+
+  var VIEWS = {
+    top:    { theta: 0, phi: 0.02 },
+    bottom: { theta: 0, phi: Math.PI - 0.02 },
+    iso:    { theta: -0.62, phi: 0.92 }
+  };
+  function setView(name) {
+    var v = VIEWS[name] || VIEWS.iso;
+    updateViewOffset();
+    fitBase = fitRadius(v.theta, v.phi);
+    if (!LABEL_REF) LABEL_REF = fitBase;    // эталон масштаба подписей — первый подгон кадра
+    orbit.goTo({ radius: fitBase, theta: v.theta, phi: v.phi, target: fitCenter() });
+    currentView = name;
+    ['top', 'bottom', 'iso'].forEach(function (n) {
+      var b = document.getElementById('view-' + n);
+      if (b) b.classList.toggle('on', n === name);
+    });
+    hint(name === 'bottom'
+      ? 'Вид снизу: плата перевёрнута через нижний край — ряд 38 наверху.'
+      : (name === 'top' ? 'Вид сверху: колонка 1 слева, ряд 1 наверху.' : ''));
+  }
+  var currentView = 'iso';
+
+  /* ------------------------------------------------------------------ */
+  /*  6. Подсветка / приглушение                                         */
+  /* ------------------------------------------------------------------ */
+
+  var focus = null;      // {components:Set, nets:Set, zones:Set, enclosure:Set} либо null
+  var focusEnc = null;   // производное: какие внешние узлы и кабели считаются активными
+
+  /* Внешние узлы подсвечиваются не только по прямому выбору: если подсвечена цепь
+     класса mains — загораются и кабели 220 В в корпусе, если power — кабель 12 В. */
+  function deriveEnc() {
+    if (!focus) return null;
+    var nodes = new Set(), links = new Set(), classes = new Set();
+    focus.nets.forEach(function (id) {
+      var n = byNet[id];
+      if (n) classes.add(n['class']);
+    });
+    encLinks.forEach(function (l, i) {
+      var on = focus.enclosure.has(l.from) || focus.enclosure.has(l.to) ||
+               focus.components.has(l.from) || focus.components.has(l.to) ||
+               classes.has(l['class']);
+      if (!on) return;
+      links.add(i);
+      if (byEnc[l.from]) nodes.add(l.from);
+      if (byEnc[l.to]) nodes.add(l.to);
+    });
+    focus.enclosure.forEach(function (id) { nodes.add(id); });
+    return { nodes: nodes, links: links };
+  }
+
+  function isActive(meta) {
+    if (!focus) return true;
+    switch (meta.kind) {
+      case 'component': return focus.components.has(meta.id);
+      case 'pin': return focus.components.has(meta.compId) || (!!meta.netId && focus.nets.has(meta.netId));
+      case 'net': return focus.nets.has(meta.id);
+      case 'zone': return focus.zones.has(meta.id);
+      case 'label': return focus.components.has(meta.compId);
+      case 'enclosure': return !!focusEnc && focusEnc.nodes.has(meta.id);
+      case 'enclink': return !!focusEnc && focusEnc.links.has(meta.index);
+      default: return true;
+    }
+  }
+
+  var hoveredComp = null;   // id компонента под курсором — для показа мелких подписей
+  var hoveredLink = -1;     // индекс кабеля корпуса под курсором
+
+  function updateLabels() {
+    gLabels.children.forEach(function (sp) {
+      var m = sp.userData.meta;
+      if (!m || !m.minor) return;
+      sp.visible = !!((focus && focus.components.has(m.compId)) || hoveredComp === m.compId);
+    });
+    // Подписи кабелей корпуса: при наведении на кабель и когда выбран внешний узел
+    // (на шагах сборки их не показываем — иначе 220 В превращается в кашу из плашек).
+    var nodePicked = !!focus && focus.enclosure.size > 0;
+    encLinkLabels.forEach(function (sp) {
+      var i = sp.userData.meta.index;
+      sp.visible = hoveredLink === i || (nodePicked && !!focusEnc && focusEnc.links.has(i));
+    });
+  }
+
+  function applyShade() {
+    for (var i = 0; i < shaded.length; i++) {
+      var obj = shaded[i];
+      var m = obj.material, base = obj.userData.base;
+      if (!m || !base) continue;
+      if (isActive(obj.userData.meta)) {
+        m.opacity = base.opacity;
+        m.transparent = base.transparent;
+        m.depthWrite = base.depthWrite;
+        if (m.emissive) m.emissive.setHex(focus ? base.hi : base.emissive);
+      } else {
+        m.transparent = true;
+        m.opacity = base.opacity * 0.07;
+        m.depthWrite = false;
+        if (m.emissive) m.emissive.setHex(0x000000);
+      }
+    }
+    updateLabels();
+  }
+
+  function setFocus(f) {
+    focus = f;
+    focusEnc = deriveEnc();
+    applyShade();
+  }
+  function mkFocus(comps, nets, zones, encl) {
+    return {
+      components: new Set(comps || []),
+      nets: new Set(nets || []),
+      zones: new Set(zones || []),
+      enclosure: new Set(encl || [])
+    };
+  }
+  function clearFocus() {
+    setFocus(null);
+    activeStep = -1;
+    renderSteps();
+    renderLists();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  7. Пикинг мышью                                                    */
+  /* ------------------------------------------------------------------ */
+
+  var raycaster = new THREE.Raycaster();
+  var pointer = new THREE.Vector2();
+  var hovered = null;
+  var selection = null;   // {type:'component'|'net'|'zone', id}
+
+  // Текстолит тоже участвует в пикинге: он перекрывает провода на своей обратной
+  // стороне, чтобы сверху нельзя было ткнуть в невидимую цепь. Клик по нему = клик по пустоте.
+  boardMesh.userData.meta = { kind: 'board' };
+
+  function pick(ev) {
+    var rect = renderer.domElement.getBoundingClientRect();
+    pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    var list = pickables.filter(function (o) {
+      var p = o;
+      while (p) { if (!p.visible) return false; p = p.parent; }
+      return true;
+    });
+    if (!boardMat.transparent) list.push(boardMesh);   // в режиме «просветить» плата не мешает
+    var hits = raycaster.intersectObjects(list, false);
+    if (!hits.length) return null;
+    var obj = hits[0].object;
+    return obj.userData.meta && obj.userData.meta.kind === 'board' ? null : obj;
+  }
+
+  function metaTitle(meta) {
+    if (!meta) return '';
+    if (meta.kind === 'component') {
+      var c = byComp[meta.id];
+      return c ? c.label + '  ·  ' + c.id : meta.id;
+    }
+    if (meta.kind === 'pin') {
+      var pc = byComp[meta.compId];
+      return (pc ? pc.id : meta.compId) + ' · вывод ' + meta.pinName + (meta.netId ? '  →  ' + meta.netId : '');
+    }
+    if (meta.kind === 'net') {
+      var n = byNet[meta.id];
+      return n ? n.label + '  ·  ' + netClass(n['class']).label : meta.id;
+    }
+    if (meta.kind === 'zone') {
+      var z = byZone[meta.id];
+      return z ? 'Зона: ' + z.label : meta.id;
+    }
+    if (meta.kind === 'enclosure') {
+      var e = byEnc[meta.id];
+      return (e ? e.label : meta.id) + '  ·  в корпусе, не на плате';
+    }
+    if (meta.kind === 'enclink') {
+      var l = encLinks[meta.index];
+      return l ? (l.label || (l.from + ' → ' + l.to)) : '';
+    }
+    return '';
+  }
+
+  var downPos = null;
+  renderer.domElement.addEventListener('pointerdown', function (e) {
+    downPos = { x: e.clientX, y: e.clientY, t: performance.now() };
+  });
+  renderer.domElement.addEventListener('pointerup', function (e) {
+    if (!downPos) return;
+    var moved = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
+    var quick = performance.now() - downPos.t < 600;
+    downPos = null;
+    if (moved > 5 || !quick || e.button !== 0) return;   // это было вращение, а не клик
+
+    var obj = pick(e);
+    if (!obj) { selection = null; showEmptyInfo(); clearFocus(); return; }
+    var meta = obj.userData.meta;
+    if (meta.kind === 'component' || meta.kind === 'pin') {
+      selectComponent(meta.compId || meta.id);
+    } else if (meta.kind === 'net') {
+      selectNet(meta.id);
+    } else if (meta.kind === 'zone') {
+      selectZone(meta.id);
+    } else if (meta.kind === 'enclosure') {
+      selectEnclosure(meta.id);
+    } else if (meta.kind === 'enclink') {
+      var l = encLinks[meta.index];
+      if (l) selectEnclosure(byEnc[l.from] ? l.from : l.to);
+    }
+  });
+
+  renderer.domElement.addEventListener('pointermove', function (e) {
+    if (downPos) return;   // во время вращения наведение не считаем
+    var obj = pick(e);
+    var el = document.getElementById('hud-hover');
+    if (obj !== hovered) {
+      hovered = obj;
+      renderer.domElement.style.cursor = obj ? 'pointer' : 'default';
+      if (el) el.textContent = obj ? metaTitle(obj.userData.meta) : '';
+      var meta = obj ? obj.userData.meta : null;
+      var comp = meta && (meta.kind === 'component' ? meta.id : meta.compId) || null;
+      var link = meta && meta.kind === 'enclink' ? meta.index : -1;
+      if (comp !== hoveredComp || link !== hoveredLink) {
+        hoveredComp = comp;
+        hoveredLink = link;
+        updateLabels();
+      }
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  8. Панели интерфейса                                               */
+  /* ------------------------------------------------------------------ */
+
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function holeText(h) { return h ? '[' + h[0] + ', ' + h[1] + ']' : '—'; }
+  function pathText(p) { return (p || []).map(function (h) { return h[0] + ',' + h[1]; }).join(' → '); }
+
+  function hint(text) {
+    var el = document.getElementById('hud-hint');
+    if (el) el.textContent = text || '';
+  }
+
+  var elInfo = document.getElementById('info');
+  var elSteps = document.getElementById('steps');
+  var elStepDetail = document.getElementById('step-detail');
+  var elNets = document.getElementById('nets');
+  var elComps = document.getElementById('comps');
+  var elEncl = document.getElementById('encl');
+  var elLegend = document.getElementById('legend');
+
+  function setTab(name) {
+    ['steps', 'list', 'info'].forEach(function (n) {
+      var b = document.querySelector('.tabs button[data-tab="' + n + '"]');
+      var p = document.querySelector('.tab-pane[data-pane="' + n + '"]');
+      if (b) b.classList.toggle('on', n === name);
+      if (p) p.classList.toggle('on', n === name);
+    });
+  }
+
+  /* ---- информация о компоненте ---- */
+
+  function netChip(netId) {
+    if (!netId) return '<span style="color:var(--text-mute)">—</span>';
+    var n = byNet[netId];
+    var color = n ? rampColor(n.ramp) : '#888780';
+    return '<span class="netlink" data-net="' + esc(netId) + '">' +
+           '<i class="sw" style="background:' + color + '"></i>' + esc(n ? n.label : netId) + '</span>';
+  }
+
+  function showComponentInfo(comp) {
+    var g = compMetrics(comp);
+    var meta = [];
+    if (comp.socket) meta.push('гнездо: ' + comp.socket);
+    if (comp.mount) meta.push('крепление: ' + comp.mount);
+    if (comp.fit === 'verify') meta.push('шаг выводов проверить прикладыванием');
+
+    var html = '<div class="info-title"><h3>' + esc(comp.label) + '</h3>' +
+               '<span class="id">' + esc(comp.id) + '</span></div>' +
+               '<div><span class="tag">' + esc(KIND_LABEL[comp.kind] || comp.kind || 'элемент') + '</span> ' +
+               '<span class="tag">высота ' + esc(g.h) + ' мм</span></div>' +
+               '<div class="note" style="border-left-color:' + rampColor(comp.ramp) + '">' +
+               '<b style="color:var(--text)">Посадочное место:</b> ' +
+               'колонки ' + g.c1 + '–' + g.c2 + ', ряды ' + g.r1 + '–' + g.r2 +
+               ' &nbsp;(' + g.w.toFixed(1) + ' × ' + g.d.toFixed(1) + ' мм)' +
+               (meta.length ? '<br>' + esc(meta.join(' · ')) : '') + '</div>';
+
+    if (comp.note) html += '<div class="note">' + esc(comp.note) + '</div>';
+
+    if (comp.pins && comp.pins.length) {
+      html += '<div class="section"><h4>Выводы</h4><table class="pins">' +
+              '<tr><th>Имя</th><th>Отверстие</th><th>Цепь</th></tr>';
+      comp.pins.forEach(function (p) {
+        html += '<tr><td><b>' + esc(p.name) + '</b></td>' +
+                '<td class="hole">' + holeText(p.hole) + '</td>' +
+                '<td>' + netChip(p.net) +
+                (p.internal ? '<div class="rn" style="color:var(--text-mute);font-size:11px;line-height:1.4;margin-top:3px">' +
+                  esc(p.internal) + '</div>' : '') +
+                '</td></tr>';
+      });
+      html += '</table>';
+      if (comp.pins.some(function (p) { return !p.net; })) {
+        html += '<div class="empty" style="font-size:11.5px">Выводы без цепи не подключаются — оставить свободными.</div>';
+      }
+      html += '</div>';
+    }
+    elInfo.innerHTML = html;
+  }
+
+  function showNetInfo(net) {
+    var cls = netClass(net['class']);
+    var html = '<div class="info-title"><h3>' + esc(net.label) + '</h3>' +
+               '<span class="id">' + esc(net.id) + '</span></div>' +
+               '<div><span class="tag" style="border-color:' + rampColor(net.ramp) + '">' +
+               esc(cls.label) + '</span>' +
+               (net.wire ? ' <span class="tag">' + esc(net.wire) + '</span>' : '') +
+               (net.offBoard ? ' <span class="tag" style="color:#ffb3b5;border-color:var(--danger)">уходит с платы</span>' : '') +
+               '</div>';
+
+    var routes = net.routes || [];
+    html += '<div class="section"><h4>Маршруты (' + routes.length + ')</h4><ul class="routes">';
+    routes.forEach(function (r) {
+      html += '<li><span class="path">' + esc(pathText(r.path)) + '</span>' +
+              (r.note ? '<span class="rn">' + esc(r.note) + '</span>' : '') + '</li>';
+    });
+    html += '</ul></div>';
+
+    var conn = [];
+    (DATA.components || []).forEach(function (c) {
+      (c.pins || []).forEach(function (p) {
+        if (p.net === net.id) conn.push({ c: c, p: p });
+      });
+    });
+    if (conn.length) {
+      html += '<div class="section"><h4>Подключено</h4><table class="pins">' +
+              '<tr><th>Элемент</th><th>Вывод</th><th>Отверстие</th></tr>';
+      conn.forEach(function (x) {
+        html += '<tr><td><span class="netlink" data-comp="' + esc(x.c.id) + '">' +
+                esc(x.c.label) + '</span></td>' +
+                '<td><b>' + esc(x.p.name) + '</b></td>' +
+                '<td class="hole">' + holeText(x.p.hole) + '</td></tr>';
+      });
+      html += '</table></div>';
+    }
+    elInfo.innerHTML = html;
+  }
+
+  function showZoneInfo(zone) {
+    var g = rectMetrics(zone.rect);
+    var keepout = zone.kind === 'keepout';
+    var html = '<div class="info-title"><h3>' + esc(zone.label) + '</h3>' +
+               '<span class="id">' + esc(zone.id) + '</span></div>' +
+               '<div><span class="tag" style="border-color:' + rampColor(zone.ramp) + '">Зона платы</span>' +
+               (keepout ? ' <span class="tag" style="color:#ffb3b5;border-color:var(--danger)">keep-out</span>' : '') +
+               '</div>' +
+               '<div class="note' + (keepout ? ' warn' : '') + '">' +
+               '<b style="color:var(--text)">Границы:</b> колонки ' + g.c1 + '–' + g.c2 +
+               ', ряды ' + g.r1 + '–' + g.r2 + '</div>';
+    if (zone.note) html += '<div class="note' + (keepout ? ' warn' : '') + '">' + esc(zone.note) + '</div>';
+
+    var inside = (DATA.components || []).filter(function (c) {
+      if (!c.body) return false;
+      var b = rectMetrics(c.body);
+      return b.c1 >= g.c1 && b.c2 <= g.c2 && b.r1 >= g.r1 && b.r2 <= g.r2;
+    });
+    if (inside.length) {
+      html += '<div class="section"><h4>Внутри зоны</h4>';
+      inside.forEach(function (c) {
+        html += '<div class="row" data-comp="' + esc(c.id) + '">' +
+                '<i class="sw" style="background:' + rampColor(c.ramp) + '"></i>' +
+                '<span class="nm">' + esc(c.label) + '</span><span class="id">' + esc(c.id) + '</span></div>';
+      });
+      html += '</div>';
+    }
+    elInfo.innerHTML = html;
+  }
+
+  function showEnclosureInfo(node) {
+    var links = encLinks.filter(function (l) { return l.from === node.id || l.to === node.id; });
+    var nameOf = function (id) {
+      if (byEnc[id]) return byEnc[id].label;
+      if (byComp[id]) return byComp[id].label + ' (на плате)';
+      return id;
+    };
+    var html = '<div class="info-title"><h3>' + esc(node.label) + '</h3>' +
+               '<span class="id">' + esc(node.id) + '</span></div>' +
+               '<div><span class="tag" style="border-color:' + rampColor(node.ramp) + '">В корпусе, не на плате</span>' +
+               (node.side ? ' <span class="tag">со стороны: ' + esc(node.side === 'left' ? 'слева' : 'снизу') + '</span>' : '') +
+               '</div>';
+    if (node.detail) html += '<div class="note">' + esc(node.detail) + '</div>';
+
+    if (links.length) {
+      html += '<div class="section"><h4>Связи</h4><table class="pins">' +
+              '<tr><th>Куда</th><th>Что за провод</th></tr>';
+      links.forEach(function (l) {
+        var other = l.from === node.id ? l.to : l.from;
+        var attr = byEnc[other] ? 'data-encl="' + esc(other) + '"' : 'data-comp="' + esc(other) + '"';
+        html += '<tr><td><span class="netlink" ' + attr + '>' +
+                '<i class="sw" style="background:' + (l['class'] === 'power' ? RAMP.amber : RAMP.red) + '"></i>' +
+                esc(nameOf(other)) + '</span></td>' +
+                '<td style="color:var(--text-dim)">' + esc(l.label || '') + '</td></tr>';
+      });
+      html += '</table></div>';
+    }
+    if (ENC.note) html += '<div class="note warn">' + esc(ENC.note) + '</div>';
+    elInfo.innerHTML = html;
+  }
+
+  function showEmptyInfo() {
+    elInfo.innerHTML = '<div class="empty">Кликни по модулю, проводу или зоне на плате — здесь появится описание, ' +
+      'таблица выводов и маршруты.<br><br>' +
+      '<span class="kbd">ЛКМ</span> вращение · <span class="kbd">колесо</span> зум · ' +
+      '<span class="kbd">ПКМ / Shift</span> панорама</div>';
+  }
+
+  function selectComponent(id) {
+    var c = byComp[id];
+    if (!c) return;
+    selection = { type: 'component', id: id };
+    var nets = [];
+    (c.pins || []).forEach(function (p) { if (p.net) nets.push(p.net); });
+    setFocus(mkFocus([id], nets, []));
+    showComponentInfo(c);
+    setTab('info');
+    activeStep = -1;
+    renderSteps();
+    renderLists();
+  }
+
+  function selectNet(id) {
+    var n = byNet[id];
+    if (!n) return;
+    selection = { type: 'net', id: id };
+    var comps = [];
+    (DATA.components || []).forEach(function (c) {
+      (c.pins || []).forEach(function (p) { if (p.net === id) comps.push(c.id); });
+    });
+    setFocus(mkFocus(comps, [id], []));
+    showNetInfo(n);
+    setTab('info');
+    activeStep = -1;
+    renderSteps();
+    renderLists();
+    if (currentView === 'top') hint('Разводка проходит снизу платы — переключись на вид «Снизу».');
+  }
+
+  function selectEnclosure(id) {
+    var n = byEnc[id];
+    if (!n) return;
+    selection = { type: 'enclosure', id: id };
+    var comps = [];
+    encLinks.forEach(function (l) {
+      if (l.from === id && byComp[l.to]) comps.push(l.to);
+      if (l.to === id && byComp[l.from]) comps.push(l.from);
+    });
+    setFocus(mkFocus(comps, [], [], [id]));
+    showEnclosureInfo(n);
+    setTab('info');
+    activeStep = -1;
+    renderSteps();
+    renderLists();
+  }
+
+  function selectZone(id) {
+    var z = byZone[id];
+    if (!z) return;
+    selection = { type: 'zone', id: id };
+    var comps = (DATA.components || []).filter(function (c) {
+      if (!c.body) return false;
+      var g = rectMetrics(z.rect), b = rectMetrics(c.body);
+      return b.c1 >= g.c1 && b.c2 <= g.c2 && b.r1 >= g.r1 && b.r2 <= g.r2;
+    }).map(function (c) { return c.id; });
+    setFocus(mkFocus(comps, [], [id]));
+    showZoneInfo(z);
+    setTab('info');
+    activeStep = -1;
+    renderSteps();
+    renderLists();
+  }
+
+  /* ---- списки цепей и компонентов ---- */
+
+  function renderLists() {
+    var html = '';
+    (DATA.components || []).forEach(function (c) {
+      var on = selection && selection.type === 'component' && selection.id === c.id;
+      html += '<div class="row' + (on ? ' on' : '') + '" data-comp="' + esc(c.id) + '">' +
+              '<i class="sw" style="background:' + rampColor(c.ramp) + '"></i>' +
+              '<span class="nm">' + esc(c.label) + '</span>' +
+              '<span class="id">' + esc(c.id) + '</span></div>';
+    });
+    elComps.innerHTML = html;
+
+    if (elEncl) {
+      html = '';
+      encNodes.forEach(function (n) {
+        var on = selection && selection.type === 'enclosure' && selection.id === n.id;
+        html += '<div class="row' + (on ? ' on' : '') + '" data-encl="' + esc(n.id) + '">' +
+                '<i class="sw" style="background:' + rampColor(n.ramp) + ';opacity:0.55;' +
+                'outline:1px dashed ' + rampColor(n.ramp) + ';outline-offset:1px"></i>' +
+                '<span class="nm">' + esc(n.label) + '</span></div>';
+      });
+      elEncl.innerHTML = html || '<div class="empty">Нет внешних узлов.</div>';
+    }
+
+    html = '';
+    (DATA.nets || []).forEach(function (n) {
+      var on = selection && selection.type === 'net' && selection.id === n.id;
+      html += '<div class="row' + (on ? ' on' : '') + '" data-net="' + esc(n.id) + '">' +
+              '<i class="sw" style="background:' + rampColor(n.ramp) + '"></i>' +
+              '<span class="nm">' + esc(n.label) + '</span>' +
+              '<span class="id">' + esc(netClass(n['class']).label) + '</span></div>';
+    });
+    elNets.innerHTML = html;
+  }
+
+  /* ---- шаги сборки ---- */
+
+  var activeStep = -1;
+  var STEPS = DATA.steps || [];
+
+  function renderSteps() {
+    var html = '';
+    STEPS.forEach(function (s, i) {
+      html += '<div class="step' + (i === activeStep ? ' on' : '') + '" data-step="' + i + '">' +
+              '<i class="n">' + esc(s.n !== undefined ? s.n : i + 1) + '</i>' +
+              '<span class="t">' + esc(s.title) + '</span></div>';
+    });
+    elSteps.innerHTML = html;
+
+    if (activeStep >= 0 && STEPS[activeStep]) {
+      var s = STEPS[activeStep];
+      var h = s.highlight || {};
+      var bits = [];
+      if (h.components && h.components.length) bits.push('элементы: ' + h.components.join(', '));
+      if (h.nets && h.nets.length) bits.push('цепи: ' + h.nets.join(', '));
+      if (h.zones && h.zones.length) bits.push('зоны: ' + h.zones.join(', '));
+      elStepDetail.innerHTML = '<b>' + esc((s.n !== undefined ? s.n + '. ' : '') + s.title) + '</b>' +
+        esc(s.detail || '') +
+        (bits.length ? '<div style="margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--text-mute)">' +
+          esc(bits.join(' · ')) + '</div>' : '');
+      elStepDetail.style.display = '';
+    } else {
+      elStepDetail.style.display = 'none';
+    }
+  }
+
+  function gotoStep(i) {
+    if (!STEPS.length) return;
+    activeStep = Math.min(STEPS.length - 1, Math.max(0, i));
+    var s = STEPS[activeStep];
+    var h = s.highlight || {};
+    selection = null;
+    setFocus(mkFocus(h.components, h.nets, h.zones));
+    renderSteps();
+    renderLists();
+    setTab('steps');
+    var el = elSteps.querySelector('.step.on');
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+    // если шаг про разводку — подсказать, что смотреть надо снизу
+    if ((h.nets && h.nets.length) && !(h.components && h.components.length) && currentView !== 'bottom') {
+      hint('Шаг про разводку — включи вид «Снизу», провода идут по нижней стороне.');
+    } else {
+      hint('');
+    }
+  }
+
+  /* ---- легенда ---- */
+
+  function renderLegend() {
+    var html = '<h4>Зоны платы</h4>';
+    (DATA.zones || []).forEach(function (z) {
+      html += '<div class="legend-item" data-zone="' + esc(z.id) + '" style="cursor:pointer">' +
+              '<i class="sw" style="background:' + rampColor(z.ramp) + '"></i>' +
+              '<b>' + esc(z.label) + '</b></div>';
+    });
+    html += '<h4 style="margin-top:14px">Цепи</h4>';
+    var seen = {};
+    (DATA.nets || []).forEach(function (n) {
+      var c = n['class'] || 'other';
+      if (seen[c]) return;
+      seen[c] = 1;
+      var cls = netClass(c);
+      html += '<div class="legend-item">' +
+              '<i class="ln" style="width:18px;height:' + Math.max(2, cls.radius * 3) + 'px;background:' +
+              rampColor(n.ramp) + '"></i><b>' + esc(cls.label) + '</b>' +
+              '<span style="margin-left:auto;font-family:var(--mono);font-size:11px">' +
+              cls.radius.toFixed(2) + ' мм</span></div>';
+    });
+    html += '<div class="legend-item" style="margin-top:6px;color:var(--text-mute)">' +
+            'Цвет провода берётся из поля <code>ramp</code> цепи, толщина — из класса.</div>';
+
+    if (encNodes.length) {
+      html += '<h4 style="margin-top:14px">Вне платы</h4>' +
+              '<div class="legend-item"><i class="sw" style="background:transparent;' +
+              'border:1px dashed var(--text-dim)"></i><b>Узлы в корпусе</b></div>' +
+              '<div class="legend-item"><i class="ln" style="width:18px;height:4px;background:' + RAMP.red +
+              '"></i><b>220 В в корпусе</b></div>' +
+              '<div class="legend-item"><i class="ln" style="width:18px;height:3px;background:' + RAMP.amber +
+              '"></i><b>12 В на плату</b></div>';
+    }
+    elLegend.innerHTML = html;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  9. Слои                                                            */
+  /* ------------------------------------------------------------------ */
+
+  var LAYER_TARGETS = {
+    power: function () { return wireGroups.power; },
+    gnd: function () { return wireGroups.gnd; },
+    signal: function () { return wireGroups.signal; },
+    mains: function () { return wireGroups.mains; },
+    components: function () { return gComponents; },
+    zones: function () { return gZones; },
+    labels: function () { return gLabels; },
+    enclosure: function () { return gEnclosure; }
+  };
+
+  function wireLayers() {
+    Array.prototype.forEach.call(document.querySelectorAll('input[data-layer]'), function (inp) {
+      var name = inp.getAttribute('data-layer');
+      // Цепи неизвестного класса (если такие появятся в board.json) живут
+      // в группе other и всегда видимы — лучше показать лишнее, чем потерять.
+      var apply = function () {
+        var t = LAYER_TARGETS[name];
+        if (t) t().visible = inp.checked;
+      };
+      inp.addEventListener('change', apply);
+      apply();
+    });
+
+    var xray = document.getElementById('board-xray');
+    if (xray) {
+      var applyX = function () {
+        boardMat.transparent = xray.checked;
+        boardMat.opacity = xray.checked ? 0.34 : 1;
+        boardMat.depthWrite = !xray.checked;
+        boardMat.needsUpdate = true;
+        var pm = boardMesh.userData.padMat, hm = boardMesh.userData.holeMat;
+        [pm, hm].forEach(function (m) {
+          if (!m) return;
+          m.transparent = xray.checked;
+          m.opacity = xray.checked ? 0.45 : 1;
+          m.needsUpdate = true;
+        });
+      };
+      xray.addEventListener('change', applyX);
+      applyX();
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  10. Тема                                                           */
+  /* ------------------------------------------------------------------ */
+
+  function applyTheme(name) {
+    theme = name;
+    document.documentElement.setAttribute('data-theme', name);
+    var t = THEMES[name];
+    renderer.setClearColor(t.bg, 1);
+    scene.background = new THREE.Color(t.bg);
+    boardMat.color.setHex(t.board);
+    boardEdges.material.color.setHex(t.boardEdge);
+    hemi.color.setHex(t.hemiSky);
+    hemi.groundColor.setHex(t.hemiGround);
+    ambient.intensity = t.ambient;
+    var pm = boardMesh.userData.padMat, hm = boardMesh.userData.holeMat;
+    if (pm) pm.color.setHex(t.pad);
+    if (hm) hm.color.setHex(t.hole);
+    var btn = document.getElementById('theme-toggle');
+    if (btn) btn.textContent = name === 'dark' ? '☾ Тёмная' : '☀ Светлая';
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  11. Обработчики интерфейса                                         */
+  /* ------------------------------------------------------------------ */
+
+  function bindUI() {
+    document.getElementById('view-top').addEventListener('click', function () { setView('top'); });
+    document.getElementById('view-bottom').addEventListener('click', function () { setView('bottom'); });
+    document.getElementById('view-iso').addEventListener('click', function () { setView('iso'); });
+    document.getElementById('view-reset').addEventListener('click', function () {
+      setView('iso');
+      selection = null;
+      showEmptyInfo();
+      clearFocus();
+      hint('');
+    });
+    document.getElementById('theme-toggle').addEventListener('click', function () {
+      applyTheme(theme === 'dark' ? 'light' : 'dark');
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) {
+      b.addEventListener('click', function () { setTab(b.getAttribute('data-tab')); });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.panel-head .collapse'), function (b) {
+      b.addEventListener('click', function () {
+        b.closest('.panel').classList.toggle('collapsed');
+      });
+    });
+
+    document.getElementById('step-prev').addEventListener('click', function () {
+      gotoStep(activeStep <= 0 ? 0 : activeStep - 1);
+    });
+    document.getElementById('step-next').addEventListener('click', function () {
+      gotoStep(activeStep < 0 ? 0 : activeStep + 1);
+    });
+    document.getElementById('step-clear').addEventListener('click', function () {
+      selection = null;
+      showEmptyInfo();
+      clearFocus();
+      hint('');
+    });
+
+    // делегирование кликов по спискам и ссылкам внутри панелей
+    document.getElementById('ui').addEventListener('click', function (e) {
+      var t = e.target.closest('[data-step]');
+      if (t) { gotoStep(parseInt(t.getAttribute('data-step'), 10)); return; }
+      t = e.target.closest('[data-comp]');
+      if (t) { selectComponent(t.getAttribute('data-comp')); return; }
+      t = e.target.closest('[data-net]');
+      if (t) { selectNet(t.getAttribute('data-net')); return; }
+      t = e.target.closest('[data-zone]');
+      if (t) { selectZone(t.getAttribute('data-zone')); return; }
+      t = e.target.closest('[data-encl]');
+      if (t) { selectEnclosure(t.getAttribute('data-encl')); return; }
+    });
+
+    window.addEventListener('keydown', function (e) {
+      if (e.target && /input|textarea/i.test(e.target.tagName)) return;
+      if (e.key === 'ArrowRight') gotoStep(activeStep < 0 ? 0 : activeStep + 1);
+      else if (e.key === 'ArrowLeft') gotoStep(activeStep <= 0 ? 0 : activeStep - 1);
+      else if (e.key === 'Escape') { selection = null; showEmptyInfo(); clearFocus(); }
+      else if (e.key === '1') setView('top');
+      else if (e.key === '2') setView('bottom');
+      else if (e.key === '3') setView('iso');
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  12. Запуск                                                         */
+  /* ------------------------------------------------------------------ */
+
+  function resize() {
+    var w = window.innerWidth, h = window.innerHeight;
+    camera.aspect = w / h;
+    renderer.setSize(w, h, false);
+    updateViewOffset();          // внутри вызывает updateProjectionMatrix
+    refit();
+  }
+  window.addEventListener('resize', resize);
+
+  function tick() {
+    orbit.update();
+    updateLabelScale();
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  }
+
+  // шапка
+  (function fillHead() {
+    var m = DATA.meta || {};
+    var t = document.getElementById('brand-title');
+    var s = document.getElementById('brand-sub');
+    if (t) t.textContent = m.name || 'Монтажная плата';
+    if (s) s.textContent = [m.revision, m.board, COLS + '×' + ROWS + ' отв., шаг ' + PITCH + ' мм']
+      .filter(Boolean).join('  ·  ');
+    var stat = document.getElementById('hud-stats');
+    if (stat) stat.textContent = (DATA.components || []).length + ' элементов · ' +
+      (DATA.nets || []).length + ' цепей · ' + (DATA.steps || []).length + ' шагов сборки';
+  })();
+
+  // Небольшой публичный API: удобно дёргать из консоли и проверять состояние сцены.
+  window.BOARD_VIEWER = {
+    scene: scene,
+    camera: camera,
+    orbit: orbit,
+    setView: setView,
+    setTheme: applyTheme,
+    selectComponent: selectComponent,
+    selectNet: selectNet,
+    selectZone: selectZone,
+    selectEnclosure: selectEnclosure,
+    gotoStep: gotoStep,
+    clearFocus: clearFocus,
+    // сводка: сколько объектов сейчас приглушено — по ней видно, что подсветка сработала
+    state: function () {
+      var dim = 0, lit = 0;
+      shaded.forEach(function (o) { (isActive(o.userData.meta) ? lit++ : dim++); });
+      return {
+        focus: focus ? {
+          components: Array.from(focus.components),
+          nets: Array.from(focus.nets),
+          zones: Array.from(focus.zones),
+          enclosure: Array.from(focus.enclosure)
+        } : null,
+        lit: lit, dimmed: dim, objects: shaded.length,
+        view: currentView,
+        camera: { radius: +orbit.radius.toFixed(1), theta: +orbit.theta.toFixed(2), phi: +orbit.phi.toFixed(2) }
+      };
+    }
+  };
+
+  applyTheme('dark');
+  wireLayers();
+  bindUI();
+  renderLegend();
+  renderLists();
+  renderSteps();
+  showEmptyInfo();
+  setTab('steps');
+  resize();          // сначала размеры и аспект, потом подгон камеры под них
+  setView('iso');
+  tick();
+})();
