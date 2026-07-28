@@ -124,7 +124,7 @@ ${css}
         <label class="check"><input type="checkbox" data-layer="signal" checked>
           <i class="sw" style="background:linear-gradient(135deg,#7F77DD,#1D9E75)"></i><span>Сигналы</span><small>SPI / UART</small></label>
         <label class="check"><input type="checkbox" data-layer="mains" checked>
-          <i class="sw" style="background:#D4353B"></i><span>220 В</span><small>навесом</small></label>
+          <i class="sw" style="background:#D4353B"></i><span>220 В</span><small>навесом ПОВЕРХ платы</small></label>
       </div>
       <div class="section">
         <h4>Сверху платы</h4>

@@ -96,16 +96,23 @@
   var PITCH = B.pitch || 2.54;
   var THICK = B.thickness || 1.6;
 
-  var OX = -((COLS - 1) * PITCH) / 2;   // сдвиг, чтобы плата стояла по центру сцены
-  var OZ = -((ROWS - 1) * PITCH) / 2;
+  /* Габарит текстолита берём из sizeMM: у настоящей протоплаты по краям есть
+     зелёные поля, а сетка пятачков смещена от угла на gridOffsetMM. Плата
+     центрирована в нуле, поэтому смещения считаем от её левого верхнего угла.
+     Старый формат (без sizeMM) остаётся рабочим: сетка с полем в полшага. */
+  var BOARD_W = (B.sizeMM && B.sizeMM[0]) || COLS * PITCH;
+  var BOARD_D = (B.sizeMM && B.sizeMM[1]) || ROWS * PITCH;
+  var GRID_OFF = B.gridOffsetMM || [
+    (BOARD_W - (COLS - 1) * PITCH) / 2,
+    (BOARD_D - (ROWS - 1) * PITCH) / 2
+  ];
+  var OX = -BOARD_W / 2 + GRID_OFF[0];  // центр пятачка [1,1] в координатах сцены
+  var OZ = -BOARD_D / 2 + GRID_OFF[1];
   var TOP = THICK / 2;                  // верхняя поверхность текстолита
   var BOT = -THICK / 2;                 // нижняя поверхность
 
   function hx(col) { return (col - 1) * PITCH + OX; }
   function hz(row) { return (row - 1) * PITCH + OZ; }
-
-  var BOARD_W = COLS * PITCH;           // с полями по половине шага с каждой стороны
-  var BOARD_D = ROWS * PITCH;
 
   function rampColor(name) { return RAMP[name] || RAMP[DEFAULT_RAMP]; }
   function rampHex(name) { return parseInt(rampColor(name).slice(1), 16); }
@@ -315,21 +322,69 @@
     });
     boardMesh.userData.padMat = padMat;
     boardMesh.userData.holeMat = holeMat;
+
+    /* Краевые полосы (board.edgeStrips): по узким краям платы вместо круглых
+       пятачков идут вытянутые овальные, попарно соединённые. Рисуем перемычку
+       между соседними кольцами пары — получается «капсула». Своих цепей на
+       этих колонках нет: соседние отверстия там electрически связаны. */
+    var es = B.edgeStrips;
+    if (es) {
+      var barZ = new THREE.PlaneGeometry(1.92, PITCH);   // перемычка вдоль ряда
+      var barX = new THREE.PlaneGeometry(PITCH, 1.92);   // перемычка вдоль колонки
+      var addBar = function (x, z, geo) {
+        [[TOP + 0.012, -Math.PI / 2], [BOT - 0.012, Math.PI / 2]].forEach(function (s) {
+          var bar = new THREE.Mesh(geo, padMat);
+          bar.rotation.x = s[1];
+          bar.position.set(x, s[0], z);
+          gBoard.add(bar);
+        });
+      };
+      (es.cols || []).forEach(function (c) {
+        for (var r = 1; r + 1 <= ROWS; r += 2) addBar(hx(c), (hz(r) + hz(r + 1)) / 2, barZ);
+      });
+      (es.rows || []).forEach(function (r) {
+        for (var c = 1; c + 1 <= COLS; c += 2) addBar((hx(c) + hx(c + 1)) / 2, hz(r), barX);
+      });
+    }
   })();
 
-  // Крепёжные отверстия — крупные металлизированные кольца.
-  (DATA.board.mountingHoles || []).forEach(function (h) {
-    var geo = new THREE.RingGeometry(1.6, 2.6, 20);
-    var mat = new THREE.MeshStandardMaterial({
-      color: 0xc9ccd2, roughness: 0.35, metalness: 0.8, side: THREE.DoubleSide
+  /* Крепёжные отверстия. Новый формат — миллиметры от угла платы
+     ({units,diameter,positions}), они лежат в зелёном поле и посадочных мест
+     не занимают; старый формат (массив [колонка, ряд]) тоже понимаем. */
+  (function buildMountingHoles() {
+    var mh = DATA.board.mountingHoles;
+    if (!mh) return;
+    var byGrid = Array.isArray(mh);
+    var list = byGrid ? mh : (mh.positions || []);
+    var r = ((!byGrid && mh.diameter) || 3.2) / 2;
+    var wallMat = new THREE.MeshStandardMaterial({
+      color: 0x0e1116, roughness: 0.85, side: THREE.DoubleSide
     });
-    [TOP + 0.03, BOT - 0.03].forEach(function (y, k) {
-      var ring = new THREE.Mesh(geo, mat);
-      ring.rotation.x = k === 0 ? -Math.PI / 2 : Math.PI / 2;
-      ring.position.set(hx(h[0]), y, hz(h[1]));
-      gBoard.add(ring);
+    var faceMat = new THREE.MeshBasicMaterial({ color: 0x0e1116, side: THREE.DoubleSide });
+    var rimMat = new THREE.MeshStandardMaterial({
+      color: 0xa9b0b8, roughness: 0.55, metalness: 0.25, side: THREE.DoubleSide
     });
-  });
+    var wallGeo = new THREE.CylinderGeometry(r, r, THICK + 0.06, 22, 1, true);
+    var faceGeo = new THREE.CircleGeometry(r, 22);
+    var rimGeo = new THREE.RingGeometry(r, r + 0.45, 22);
+    list.forEach(function (h) {
+      var x = byGrid ? hx(h[0]) : -BOARD_W / 2 + h[0];
+      var z = byGrid ? hz(h[1]) : -BOARD_D / 2 + h[1];
+      var wall = new THREE.Mesh(wallGeo, wallMat);
+      wall.position.set(x, 0, z);
+      gBoard.add(wall);
+      [[TOP + 0.02, -Math.PI / 2], [BOT - 0.02, Math.PI / 2]].forEach(function (s) {
+        var face = new THREE.Mesh(faceGeo, faceMat);
+        face.rotation.x = s[1];
+        face.position.set(x, s[0], z);
+        gBoard.add(face);
+        var rim = new THREE.Mesh(rimGeo, rimMat);
+        rim.rotation.x = s[1];
+        rim.position.set(x, s[0] + (s[0] > 0 ? 0.004 : -0.004), z);
+        gBoard.add(rim);
+      });
+    });
+  })();
 
   /* ------------------------------------------------------------------ */
   /*  2. Зоны                                                            */
@@ -388,7 +443,7 @@
         new THREE.BoxGeometry(g.w, clearH, g.d),
         new THREE.MeshStandardMaterial({
           color: col, roughness: 0.9, metalness: 0.0,
-          transparent: true, opacity: 0.14, depthWrite: false
+          transparent: true, opacity: 0.22, depthWrite: false
         })
       );
       slab.position.set(g.cx, TOP + clearH / 2, g.cz);
@@ -1062,7 +1117,7 @@
 
     // обечайка корпуса: дымчатый пластик, сквозь него вставку видно
     var shell = boxMesh(g.w * 0.88, shellH, g.d * 0.9,
-      matStd(0x23272d, { rough: 0.6, opacity: 0.55 }));
+      matStd(0x1b1f25, { rough: 0.62, opacity: 0.68 }));
     shell.position.set(g.cx, y1 + baseH + shellH / 2, g.cz);
     add(shell);
     var edges = new THREE.LineSegments(
@@ -1093,14 +1148,70 @@
     });
   }
 
-  /* --- Звезда земли: приплюснутая капля припоя --- */
+  /* --- Узел пайки («звезда земли») ------------------------------------
+     Не деталь, а несколько пятачков, спаянных обрезками лужёной проволоки
+     по НИЖНЕЙ стороне платы: каждый луч уходит со своего пятачка. Поэтому
+     рисуем сами перемычки (comp.bridges) проволокой и каплю припоя на
+     каждом задетом пятачке — одной общей каплей это не показать. --- */
   function buildJunction(comp, g, y0, add) {
-    var r = Math.min(g.w, g.d) * 0.42;
-    var blob = new THREE.Mesh(new THREE.SphereGeometry(r, 18, 12),
-      matStd(0xc4c9cf, { rough: 0.18, metal: 0.9 }));
-    blob.scale.y = 0.45;
-    blob.position.set(g.cx, y0 + r * 0.4, g.cz);
-    add(blob);
+    var bridges = comp.bridges || [];
+    var solderMat = matStd(0xb9bec7, { rough: 0.28, metal: 0.85 });
+
+    if (!bridges.length) {
+      // старые данные без перемычек — прежняя приплюснутая капля
+      var r = Math.min(g.w, g.d) * 0.42;
+      var blob = new THREE.Mesh(new THREE.SphereGeometry(r, 18, 12),
+        matStd(0xc4c9cf, { rough: 0.18, metal: 0.9 }));
+      blob.scale.y = 0.45;
+      blob.position.set(g.cx, y0 + r * 0.4, g.cz);
+      add(blob);
+      return;
+    }
+
+    var wireMat = matStd(0xd2d7dd, { rough: 0.22, metal: 0.9 });
+    var yWire = BOT - 0.6;        // проволока лежит плашмя на пятачках снизу
+    var pads = {};
+
+    // Перемычка принадлежит и узлу, и цепи: те же пути лежат в routes цепи,
+    // поэтому она должна загораться и при выборе узла, и при подсветке цепи
+    // (например на шаге «Лучи земли», где выбраны только цепи).
+    var netId = null;
+    (comp.pins || []).forEach(function (p) { if (!netId && p.net) netId = p.net; });
+    function addBridge(mesh, pick) {
+      var m = add(mesh, pick);
+      m.userData.meta = { kind: 'bridge', compId: comp.id, netId: netId };
+      return m;
+    }
+
+    bridges.forEach(function (br) {
+      var p = br.path || [];
+      p.forEach(function (h, i) {
+        pads[h[0] + ',' + h[1]] = h;
+        if (!i) return;
+        addBridge(spanCylinder(
+          new THREE.Vector3(hx(p[i - 1][0]), yWire, hz(p[i - 1][1])),
+          new THREE.Vector3(hx(h[0]), yWire, hz(h[1])),
+          0.5, wireMat, 10));
+      });
+    });
+
+    Object.keys(pads).forEach(function (k) {
+      var h = pads[k];
+      var drop = new THREE.Mesh(new THREE.SphereGeometry(1.2, 12, 9), solderMat);
+      drop.scale.y = 0.55;
+      drop.position.set(hx(h[0]), BOT - 0.32, hz(h[1]));
+      addBridge(drop, false);
+    });
+
+    // подписи пятачков узла: какой луч куда — показываем при наведении/выборе
+    (comp.pins || []).forEach(function (p) {
+      if (!p.hole) return;
+      var tag = makeLabel(p.name, { size: 2.2, color: '#dfe6ef' });
+      tag.position.set(hx(p.hole[0]), TOP + 5.5, hz(p.hole[1]));
+      tag.visible = false;
+      gLabels.add(tag);
+      register(tag, { kind: 'label', compId: comp.id, minor: true });
+    });
   }
 
   /* --- Сетевой AC-DC модуль на плате. Два непохожих корпуса, выбираем
@@ -1440,6 +1551,18 @@
     return new THREE.Vector3(hx(last[0]) + (dx / len) * 12, y, hz(last[1]) + (dy / len) * 12);
   }
 
+  /* Перемычки узлов пайки (STAR.bridges) рисует билдер компонента —
+     проволокой по нижней стороне платы. В routes цепи те же пути
+     продублированы (чтобы валидатор видел связность узла), и вторым,
+     обычным проводом их рисовать не надо. */
+  function pathKey(p) {
+    return (p || []).map(function (h) { return h[0] + ',' + h[1]; }).join(';');
+  }
+  var BRIDGE_PATHS = {};
+  (DATA.components || []).forEach(function (c) {
+    (c.bridges || []).forEach(function (b) { BRIDGE_PATHS[pathKey(b.path)] = c.id; });
+  });
+
   (DATA.nets || []).forEach(function (net) {
     var cls = netClass(net['class']);
     var mains = net['class'] === 'mains';
@@ -1452,15 +1575,17 @@
     (net.routes || []).forEach(function (route, ri) {
       var path = route.path || [];
       if (path.length < 2) return;
+      if (BRIDGE_PATHS[pathKey(path)]) return;   // это перемычка узла, её рисует сам узел
 
       var last = path[path.length - 1];
       var exits = net.offBoard && onEdge(last);   // маршрут уходит за край платы
 
-      /* 220 В по меди платы не разводится: жилы между пятачками идут НАВЕСОМ —
-         дугой в воздухе над компонентами пониже (~12–15 мм над платой).
-         Такой рисуем каждый mains-маршрут, обе точки которого остаются
-         на плате; выходы за край (провода к приводу) — как раньше, вниз. */
-      var aerial = mains && !exits;
+      /* Сторона монтажа — строго из данных (net.side): "top" — навесной провод
+         ПОВЕРХ платы, "bottom" — разводка под платой. Все 220 В помечены "top"
+         и под платой не появляются нигде: так их видно, они не идут рядом с
+         низковольтной разводкой и не проходят под контактами реле.
+         Если поля нет (старые данные) — прежнее правило по классу цепи. */
+      var aerial = net.side ? net.side === 'top' : mains;
       var pts = [];
 
       if (aerial) {
@@ -1479,8 +1604,13 @@
             pts.push(new THREE.Vector3(hx(path[k][0]), yArc, hz(path[k][1])));
           }
         }
-        pts.push(new THREE.Vector3(Z.x, yArc - 2.4, Z.z));
-        pts.push(Z);
+        if (exits) {
+          // навесная жила, уходящая за край: спуска на пятачок нет, уводим по воздуху
+          pts.push(offBoardPoint(path[path.length - 2], last, yArc));
+        } else {
+          pts.push(new THREE.Vector3(Z.x, yArc - 2.4, Z.z));
+          pts.push(Z);
+        }
       } else {
         var yRun = -depth;
 
@@ -1571,15 +1701,19 @@
 
   // Точка привязки кабеля: стеночный узел или компонент на плате. pinSpec
   // (fromPin/toPin из board.json) прицеливает кабель в конкретную клемму
-  // (NO реле, L/N клеммника), а не в центр корпуса.
-  function encAnchor(id, pinSpec) {
+  // (NO реле, L/N клеммника), а не в центр корпуса. topSide — кабель приходит
+  // на клемму СВЕРХУ (все 220 В), иначе подключается снизу, как разводка.
+  function encAnchor(id, pinSpec, topSide) {
     var n = byEnc[id];
     if (n && n.at) return { x: hx(n.at[0]), z: hz(n.at[1]), y: ENC_CABLE, outside: true };
     var pp = pinPoint(id, pinSpec);
     var c = byComp[id];
     if (c && c.body) {
       var g = rectMetrics(c.body);
-      return { x: pp ? pp.x : g.cx, z: pp ? pp.z : g.cz, y: BOT - 0.3, outside: false };
+      return {
+        x: pp ? pp.x : g.cx, z: pp ? pp.z : g.cz,
+        y: topSide ? TOP + 0.3 : BOT - 0.3, outside: false
+      };
     }
     return null;
   }
@@ -1672,7 +1806,12 @@
   });
 
   encLinks.forEach(function (link, idx) {
-    var a = encAnchor(link.from, link.fromPin), b = encAnchor(link.to, link.toPin);
+    // side:"top" — кабель идёт поверху и опускается на клемму сверху.
+    // Так заходят все 220 В: гермовводы стоят высоко, под платой сетевых
+    // проводов нет вообще (см. meta.wiring в board.json).
+    var overBoard = link.side ? link.side === 'top' : link['class'] === 'mains';
+    var a = encAnchor(link.from, link.fromPin, overBoard);
+    var b = encAnchor(link.to, link.toPin, overBoard);
     if (!a || !b) return;   // ссылка в никуда — молча пропускаем
     var cls = link['class'] === 'power' ? 'power' : 'mains';
     var pts;
@@ -1682,6 +1821,19 @@
       pts = [
         new THREE.Vector3(a.x, a.y, a.z),
         new THREE.Vector3((a.x + b.x) / 2, a.y - 1.6, (a.z + b.z) / 2),
+        new THREE.Vector3(b.x, b.y, b.z)
+      ];
+    } else if (overBoard) {
+      // подъём от стеночного узла → пролёт над всеми корпусами → вертикальный
+      // спуск на клемму. Высота пролёта выше самого высокого корпуса (25 мм).
+      var yFly = TOP + 26 + (idx % 3) * 1.6;
+      pts = [
+        new THREE.Vector3(a.x, a.y, a.z),
+        new THREE.Vector3(a.x, yFly - 4, a.z),
+        new THREE.Vector3(a.x * 0.6 + b.x * 0.4, yFly, a.z * 0.6 + b.z * 0.4),
+        new THREE.Vector3(b.x, yFly, b.z),
+        new THREE.Vector3(b.x, yFly - 4, b.z),
+        new THREE.Vector3(b.x, b.y + 2.5, b.z),
         new THREE.Vector3(b.x, b.y, b.z)
       ];
     } else {
@@ -2041,7 +2193,8 @@
     if (!focus) return true;
     switch (meta.kind) {
       case 'component': return focus.components.has(meta.id);
-      case 'pin': return focus.components.has(meta.compId) || (!!meta.netId && focus.nets.has(meta.netId));
+      case 'pin':
+      case 'bridge': return focus.components.has(meta.compId) || (!!meta.netId && focus.nets.has(meta.netId));
       case 'net': return focus.nets.has(meta.id);
       case 'zone': return focus.zones.has(meta.id);
       case 'label': return focus.components.has(meta.compId);
@@ -2069,6 +2222,14 @@
     });
   }
 
+  /* Смена флага transparent у уже собранного материала требует пересборки
+     шейдера: без needsUpdate three.js продолжает рисовать его непрозрачным,
+     и приглушение не видно вовсе. Ставим флаг только при реальном
+     изменении — иначе перекомпиляция шла бы на каждый клик по всей сцене. */
+  function setTransparent(m, v) {
+    if (m.transparent !== v) { m.transparent = v; m.needsUpdate = true; }
+  }
+
   function applyShade() {
     for (var i = 0; i < shaded.length; i++) {
       var obj = shaded[i];
@@ -2076,11 +2237,11 @@
       if (!m || !base) continue;
       if (isActive(obj.userData.meta)) {
         m.opacity = base.opacity;
-        m.transparent = base.transparent;
+        setTransparent(m, base.transparent);
         m.depthWrite = base.depthWrite;
         if (m.emissive) m.emissive.setHex(focus ? base.hi : base.emissive);
       } else {
-        m.transparent = true;
+        setTransparent(m, true);
         m.opacity = base.opacity * 0.07;
         m.depthWrite = false;
         if (m.emissive) m.emissive.setHex(0x000000);
@@ -2149,6 +2310,11 @@
       var pc = byComp[meta.compId];
       return (pc ? pc.id : meta.compId) + ' · вывод ' + meta.pinName + (meta.netId ? '  →  ' + meta.netId : '');
     }
+    if (meta.kind === 'bridge') {
+      var bc = byComp[meta.compId];
+      return (bc ? bc.label : meta.compId) + ' · перемычка узла' +
+             (meta.netId ? '  →  ' + meta.netId : '');
+    }
     if (meta.kind === 'net') {
       var n = byNet[meta.id];
       return n ? n.label + '  ·  ' + netClass(n['class']).label : meta.id;
@@ -2182,7 +2348,7 @@
     var obj = pick(e);
     if (!obj) { selection = null; showEmptyInfo(); clearFocus(); return; }
     var meta = obj.userData.meta;
-    if (meta.kind === 'component' || meta.kind === 'pin') {
+    if (meta.kind === 'component' || meta.kind === 'pin' || meta.kind === 'bridge') {
       selectComponent(meta.compId || meta.id);
     } else if (meta.kind === 'net') {
       selectNet(meta.id);
@@ -2290,7 +2456,10 @@
       html += '<div class="section"><h4>Выводы</h4><table class="pins">' +
               '<tr><th>Имя</th><th>Отверстие</th><th>Цепь</th></tr>';
       comp.pins.forEach(function (p) {
-        html += '<tr><td><b>' + esc(p.name) + '</b></td>' +
+        html += '<tr><td><b>' + esc(p.name) + '</b>' +
+                // role — назначение пятачка в узле: по одному проводу на отверстие
+                (p.role ? '<div class="rn" style="color:var(--text-mute);font-size:11px;' +
+                  'line-height:1.4;margin-top:3px">' + esc(p.role) + '</div>' : '') + '</td>' +
                 '<td class="hole">' + holeText(p.hole) + '</td>' +
                 '<td>' + netChip(p.net) +
                 (p.internal ? '<div class="rn" style="color:var(--text-mute);font-size:11px;line-height:1.4;margin-top:3px">' +
@@ -2303,6 +2472,16 @@
       }
       html += '</div>';
     }
+
+    // перемычки узла пайки: пятачки, спаянные проволокой
+    if (comp.bridges && comp.bridges.length) {
+      html += '<div class="section"><h4>Перемычки узла (' + comp.bridges.length + ')</h4><ul class="routes">';
+      comp.bridges.forEach(function (b) {
+        html += '<li><span class="path">' + esc(pathText(b.path)) + '</span>' +
+                (b.note ? '<span class="rn">' + esc(b.note) + '</span>' : '') + '</li>';
+      });
+      html += '</ul></div>';
+    }
     elInfo.innerHTML = html;
   }
 
@@ -2314,6 +2493,8 @@
                esc(cls.label) + '</span>' +
                (net.conductor ? ' <span class="tag" style="border-color:' + netCss(net) + '">жила ' +
                  esc(net.conductor === 'L' ? 'L — фаза' : 'N — ноль') + '</span>' : '') +
+               (net.side ? ' <span class="tag" data-side="' + esc(net.side) + '">' +
+                 (net.side === 'top' ? 'поверх платы, навесом' : 'под платой') + '</span>' : '') +
                (net.wire ? ' <span class="tag">' + esc(net.wire) + '</span>' : '') +
                (net.offBoard ? ' <span class="tag" style="color:#ffb3b5;border-color:var(--danger)">уходит с платы</span>' : '') +
                '</div>';
@@ -2444,8 +2625,8 @@
     activeStep = -1;
     renderSteps();
     renderLists();
-    if (n['class'] === 'mains' && n.conductor) {
-      hint('Сетевая жила идёт навесом над платой — её видно сверху и в изометрии.');
+    if (n.side === 'top' || n['class'] === 'mains') {
+      hint('Провод идёт навесом ПОВЕРХ платы — его видно сверху и в изометрии.');
     } else if (currentView === 'top') {
       hint('Разводка проходит снизу платы — переключись на вид «Снизу».');
     }
@@ -2569,12 +2750,12 @@
     // по нижней стороне, а сетевые жилы (mains) — навесом над платой
     var underNets = (h.nets || []).some(function (id) {
       var n = byNet[id];
-      return n && n['class'] !== 'mains';
+      return n && (n.side ? n.side === 'bottom' : n['class'] !== 'mains');
     });
     if ((h.nets && h.nets.length) && !(h.components && h.components.length) && currentView !== 'bottom') {
       hint(underNets
         ? 'Шаг про разводку — включи вид «Снизу», провода идут по нижней стороне.'
-        : 'Сетевые жилы идут навесом над платой и за край — смотри сверху или в изометрии.');
+        : 'Сетевые жилы идут навесом ПОВЕРХ платы — смотри сверху или в изометрии.');
     } else {
       hint('');
     }
@@ -2603,7 +2784,9 @@
               cls.radius.toFixed(2) + ' мм</span></div>';
     });
     html += '<div class="legend-item" style="margin-top:6px;color:var(--text-mute)">' +
-            'Цвет провода берётся из поля <code>ramp</code> цепи, толщина — из класса.</div>';
+            'Цвет провода берётся из поля <code>ramp</code> цепи, толщина — из класса, ' +
+            'сторона монтажа — из поля <code>side</code>: 220 В идут поверх платы, ' +
+            'низковольтные — под ней.</div>';
 
     if (encNodes.length) {
       html += '<h4 style="margin-top:14px">Вне платы</h4>' +
