@@ -68,7 +68,13 @@
     terminal: 'Клеммник',
     junction: 'Узел пайки',
     psu: 'Блок питания',
+    fuse: 'Держатель предохранителя',
     'terminal-block': 'Клеммная колодка'
+  };
+
+  // Как читается поле mount компонента в панели информации
+  var MOUNT_LABEL = {
+    vertical: 'вертикально, на ребре — в угловой гребёнке'
   };
 
   var FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif';
@@ -370,50 +376,80 @@
     var g = rectMetrics(z.rect);
     var col = rampHex(z.ramp);
     var keepout = z.kind === 'keepout';
+    var clearance = z.kind === 'clearance';
+    var clearH = z.height || 5;         // потолок коридора, мм
     var y = TOP + 0.06 + idx * 0.035;   // разные высоты, чтобы плоскости не мерцали
 
-    var matOpt = {
-      color: keepout ? 0xffffff : col,
-      transparent: true,
-      opacity: keepout ? 0.42 : 0.15,
-      depthWrite: false,
-      side: THREE.DoubleSide
-    };
-    if (keepout) {
-      matOpt.map = hatchTexture(rampColor(z.ramp));
-      matOpt.map.repeat.set(g.w / 12, g.d / 12);
+    if (clearance) {
+      /* Коридор под кабель (USB-C) — не плоская заливка, а низкая
+         полупрозрачная подложка: сразу видно, до какой высоты сюда ничего
+         не ставить. Рамка пунктирная — это ограничение, а не деталь. */
+      var slab = new THREE.Mesh(
+        new THREE.BoxGeometry(g.w, clearH, g.d),
+        new THREE.MeshStandardMaterial({
+          color: col, roughness: 0.9, metalness: 0.0,
+          transparent: true, opacity: 0.14, depthWrite: false
+        })
+      );
+      slab.position.set(g.cx, TOP + clearH / 2, g.cz);
+      gZones.add(slab);
+      register(slab, { kind: 'zone', id: z.id }, { pick: true });
+
+      var dash = new THREE.LineSegments(
+        new THREE.EdgesGeometry(slab.geometry),
+        new THREE.LineDashedMaterial({
+          color: col, dashSize: 2.4, gapSize: 1.8, transparent: true, opacity: 0.9
+        })
+      );
+      dash.position.copy(slab.position);
+      dash.computeLineDistances();
+      gZones.add(dash);
+      register(dash, { kind: 'zone', id: z.id });
+    } else {
+      var matOpt = {
+        color: keepout ? 0xffffff : col,
+        transparent: true,
+        opacity: keepout ? 0.42 : 0.15,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      };
+      if (keepout) {
+        matOpt.map = hatchTexture(rampColor(z.ramp));
+        matOpt.map.repeat.set(g.w / 12, g.d / 12);
+      }
+      var plane = new THREE.Mesh(new THREE.PlaneGeometry(g.w, g.d), new THREE.MeshBasicMaterial(matOpt));
+      plane.rotation.x = -Math.PI / 2;
+      plane.position.set(g.cx, y, g.cz);
+      gZones.add(plane);
+      register(plane, { kind: 'zone', id: z.id }, { pick: true });
+
+      // рамка зоны
+      var hw = g.w / 2, hd = g.d / 2;
+      var pts = [
+        new THREE.Vector3(-hw, 0, -hd), new THREE.Vector3(hw, 0, -hd),
+        new THREE.Vector3(hw, 0, hd), new THREE.Vector3(-hw, 0, hd),
+        new THREE.Vector3(-hw, 0, -hd)
+      ];
+      var border = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: keepout ? 0.95 : 0.55 })
+      );
+      border.position.set(g.cx, y + 0.01, g.cz);
+      gZones.add(border);
+      register(border, { kind: 'zone', id: z.id });
     }
-    var plane = new THREE.Mesh(new THREE.PlaneGeometry(g.w, g.d), new THREE.MeshBasicMaterial(matOpt));
-    plane.rotation.x = -Math.PI / 2;
-    plane.position.set(g.cx, y, g.cz);
-    gZones.add(plane);
-    register(plane, { kind: 'zone', id: z.id }, { pick: true });
 
-    // рамка зоны
-    var hw = g.w / 2, hd = g.d / 2;
-    var pts = [
-      new THREE.Vector3(-hw, 0, -hd), new THREE.Vector3(hw, 0, -hd),
-      new THREE.Vector3(hw, 0, hd), new THREE.Vector3(-hw, 0, hd),
-      new THREE.Vector3(-hw, 0, -hd)
-    ];
-    var border = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints(pts),
-      new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: keepout ? 0.95 : 0.55 })
-    );
-    border.position.set(g.cx, y + 0.01, g.cz);
-    gZones.add(border);
-    register(border, { kind: 'zone', id: z.id });
-
-    var text = keepout ? '⚠ ' + z.label : z.label;
+    var text = keepout ? '⚠ ' + z.label : (clearance ? z.label + ' · ≤' + clearH + ' мм' : z.label);
     var lab = makeLabel(text, {
-      size: keepout ? 5.0 : 4.2,
+      size: keepout ? 5.0 : (clearance ? 3.4 : 4.2),
       color: keepout ? '#ffd7d8' : '#e9edf5',
       border: 'rgba(' + [col >> 16 & 255, col >> 8 & 255, col & 255].join(',') + ',0.85)',
       bg: keepout ? 'rgba(60,10,12,0.88)' : 'rgba(9,12,17,0.78)'
     });
-    // подписи зон висят выше самых высоких корпусов (конденсатор — 17 мм,
-    // реле и AC-DC модуль — 15 мм), иначе их закрывают модули
-    lab.position.set(g.cx, TOP + (keepout ? 31 : 26), g.cz);
+    // подписи зон висят выше самых высоких корпусов (SIM800L на ребре — 25 мм,
+    // конденсатор — 17 мм), иначе их закрывают модули; подпись коридора —
+    // низко, у самого коридора, чтобы читалась вместе с ним
+    lab.position.set(g.cx, TOP + (keepout ? 31 : (clearance ? clearH + 5 : 26)), g.cz);
     gZones.add(lab);
     register(lab, { kind: 'zone', id: z.id });
   });
@@ -599,10 +635,15 @@
     meander.position.set(pad.position.x, top + 0.58, g.cz);
     add(meander, false);
 
-    // USB-разъём на левом торце
-    var usb = boxMesh(g.w * 0.11, 2.0, g.d * 0.30, matStd(0xd0d5da, { rough: 0.25, metal: 0.85 }));
-    usb.position.set(g.cx - g.w / 2 + g.w * 0.055 + 0.4, top + 1.0, g.cz);
-    add(usb);
+    // USB-разъём: если в данных есть usb {at,to} — рисуем реальный, с вылетом
+    // за край модуля в свободный коридор; иначе — намёк на левом торце
+    if (comp.usb && comp.usb.at && comp.usb.to) {
+      addUsbC(comp, top, add);
+    } else {
+      var usb = boxMesh(g.w * 0.11, 2.0, g.d * 0.30, matStd(0xd0d5da, { rough: 0.25, metal: 0.85 }));
+      usb.position.set(g.cx - g.w / 2 + g.w * 0.055 + 0.4, top + 1.0, g.cz);
+      add(usb);
+    }
 
     // пара микросхем между USB и экраном
     var chipMat = matStd(0x1b1e24, { rough: 0.5 });
@@ -629,6 +670,43 @@
     add(hdr, false);
   }
 
+  /* --- Разъём USB-C модуля: торчит за край корпуса ESP32 в свободный
+     коридор, по вектору usb.at → usb.to из board.json. Габарит настоящего
+     разъёма: 9 мм в ширину, ~3 мм в высоту, вылет — из данных (~7 мм).
+     topY — верх платы модуля, разъём стоит прямо на ней. --- */
+  function addUsbC(comp, topY, add) {
+    var u = comp.usb;
+    var a = new THREE.Vector3(hx(u.at[0]), topY, hz(u.at[1]));
+    var b = new THREE.Vector3(hx(u.to[0]), topY, hz(u.to[1]));
+    var dir = new THREE.Vector3().subVectors(b, a);
+    dir.y = 0;
+    if (!dir.length()) return;
+    dir.normalize();
+
+    var H = 3.0;                                  // высота корпуса разъёма
+    var base = a.clone().addScaledVector(dir, -2.0);   // хвост заходит на плату модуля
+    var tip = b.clone();
+    var shell = spanBox(
+      base.clone().setY(topY + H / 2), tip.clone().setY(topY + H / 2),
+      9.0, H, matStd(0xc9ced4, { rough: 0.26, metal: 0.85 })
+    );
+    add(shell);
+
+    // тёмный «рот» разъёма на торце — по нему видно, куда втыкается кабель
+    var mouthC = tip.clone().addScaledVector(dir, -0.6).setY(topY + H / 2);
+    var mouth = spanBox(
+      mouthC, mouthC.clone().addScaledVector(dir, 1.0),
+      6.6, 1.7, matStd(0x0e1116, { rough: 0.8 })
+    );
+    add(mouth, false);
+
+    var lab = makeLabel('USB-C', { size: 2.8, color: '#cfe0ff' });
+    lab.position.set(tip.x, topY + H + 4.2, tip.z);
+    lab.visible = false;                          // как у мелочи — по наведению/выбору
+    gLabels.add(lab);
+    register(lab, { kind: 'label', compId: comp.id, minor: true });
+  }
+
   /* --- CC1101: зелёная плата, чип, кварц (SMA рисует addAntenna) --- */
   function buildCc1101(comp, g, y0, add) {
     var pcbH = 1.6;
@@ -647,8 +725,96 @@
     add(c2, false);
   }
 
+  /* --- SIM800L, исполнение НА РЕБРЕ (mount:"vertical") ------------------
+     У пинов — угловая гребёнка PBS-R (низкий блок с горизонтальными
+     гнёздами), из неё модуль поднимается вертикально на всю height.
+     Смысл переделки: держатель симки уезжает на боковую грань и остаётся
+     доступен сверху — поэтому он на лицевой стороне платы, вместе с IPX,
+     а экран модема — на изнанке, со стороны гребёнки. --- */
+  function buildSim800Vertical(comp, g, y0, add) {
+    var pins = (comp.pins || []).filter(function (p) { return p.hole; });
+    var xs = pins.map(function (p) { return hx(p.hole[0]); });
+    var pinCx = xs.length ? (Math.min.apply(null, xs) + Math.max.apply(null, xs)) / 2 : g.cx;
+    var pinSpan = xs.length ? (Math.max.apply(null, xs) - Math.min.apply(null, xs)) : g.w * 0.5;
+    var pinZ = pins.length ? hz(pins[0].hole[1]) : g.cz;
+
+    // 1. Угловая гребёнка: чёрный блок над пинами, гнёзда смотрят горизонтально.
+    // Блок сдвинут назад от ряда пинов — вперёд уходят гнёзда, как у PBS-R,
+    // иначе вся сборка вылезает из посадочного места в сторону соседей.
+    var hdrH = 5.0, hdrD = 4.0, hdrZ = pinZ - 1.4;
+    var hdr = boxMesh(pinSpan + 3.4, hdrH, hdrD, matStd(0x191c21, { rough: 0.85 }));
+    hdr.position.set(pinCx, y0 + hdrH / 2, hdrZ);
+    add(hdr);
+    var socketMat = matStd(0x08090c, { rough: 0.9 });
+    var contactMat = matStd(COL_GOLD, { rough: 0.35, metal: 0.85 });
+    var pinY = y0 + hdrH * 0.62;
+
+    // 2. Плата модуля — вертикально, вынесена на длину горизонтальных пинов
+    var plateT = 1.6;
+    var plateZ = hdrZ + hdrD / 2 + 1.6 + plateT / 2;   // вынос на длину горизонтальных пинов
+    var plateW = Math.max(g.w - 1.4, 8);
+    var plateBottom = y0 + hdrH * 0.5;
+    var plateH = Math.max(g.h - (plateBottom - y0), 12);
+    var plateCy = plateBottom + plateH / 2;
+    var pcb = boxMesh(plateW, plateH, plateT, matStd(0xa32530, { rough: 0.6 }));
+    pcb.position.set(g.cx, plateCy, plateZ);
+    add(pcb);
+
+    // горизонтальные штырьки модуля: из платы в гнёзда гребёнки
+    pins.forEach(function (p) {
+      var px = hx(p.hole[0]);
+      var sock = cylMesh(0.85, 1.2, socketMat, 8);
+      sock.rotation.x = Math.PI / 2;
+      sock.position.set(px, pinY, hdrZ + hdrD / 2);
+      add(sock, false);
+      add(spanCylinder(
+        new THREE.Vector3(px, pinY, hdrZ + hdrD / 2 - 0.6),
+        new THREE.Vector3(px, pinY, plateZ - plateT / 2),
+        0.32, contactMat, 6), false);
+    });
+
+    // 3. Экран модема — на изнанке (сторона гребёнки)
+    var shield = boxMesh(plateW * 0.58, plateH * 0.40, 1.4,
+      matStd(COL_SILVER, { rough: 0.3, metal: 0.75 }));
+    shield.position.set(g.cx + plateW * 0.10, plateCy + plateH * 0.10, plateZ - plateT / 2 - 0.7);
+    add(shield);
+
+    // 4. Держатель симки — на лицевой грани, лоток с прорезью под карту
+    var simW = plateW * 0.66, simH = plateH * 0.40;
+    var simCy = plateCy - plateH * 0.16;
+    var sim = boxMesh(simW, simH, 1.5, matStd(0xcfd4d9, { rough: 0.32, metal: 0.7 }));
+    sim.position.set(g.cx, simCy, plateZ + plateT / 2 + 0.75);
+    add(sim);
+    var slot = boxMesh(simW * 0.86, 1.0, 0.6, matStd(0x0d0f12, { rough: 0.85 }));
+    slot.position.set(g.cx, simCy - simH / 2 + 1.1, plateZ + plateT / 2 + 1.3);
+    add(slot, false);
+    var card = boxMesh(simW * 0.6, simH * 0.5, 0.5, matStd(0xd9b13c, { rough: 0.5, metal: 0.35 }));
+    card.position.set(g.cx, simCy + simH * 0.08, plateZ + plateT / 2 + 1.55);
+    add(card, false);
+    var simLab = makeLabel('держатель SIM', { size: 2.8, color: '#9fd8c2' });
+    simLab.position.set(g.cx, simCy, plateZ + 9);
+    simLab.visible = false;                 // показываем по наведению/выбору модуля
+    gLabels.add(simLab);
+    register(simLab, { kind: 'label', compId: comp.id, minor: true });
+
+    // 5. Жёлтый IPX — на лицевой грани, на высоте, откуда уходит пигтейл
+    var ipxY = Math.min(plateBottom + plateH - 2.5, y0 + Math.max(g.h * 0.55, 3));
+    var ipxX = comp.antenna && comp.antenna.from
+      ? Math.max(hx(comp.antenna.from[0]) + 1.4, g.cx - plateW / 2 + 1.6)
+      : g.cx - plateW / 2 + 1.6;
+    var ipx = boxMesh(2.4, 2.4, 1.5, matStd(0xd9b13c, { rough: 0.45, metal: 0.3 }));
+    ipx.position.set(ipxX, ipxY, plateZ + plateT / 2 + 0.75);
+    add(ipx, false);
+
+    // 6. Светодиод NET у верхнего края
+    var led = boxMesh(1.6, 1.0, 0.8, matStd(0x2f6fd0, { rough: 0.4 }));
+    led.position.set(g.cx + plateW * 0.32, plateBottom + plateH - 2.2, plateZ + plateT / 2 + 0.4);
+    add(led, false);
+  }
+
   /* --- SIM800L: красная плата, экран, жёлтый IPX, намёк на SIM-держатель --- */
   function buildSim800(comp, g, y0, add) {
+    if (comp.mount === 'vertical') return buildSim800Vertical(comp, g, y0, add);
     var pcbH = 1.6;
     var pcb = boxMesh(g.w, pcbH, g.d, matStd(0xa32530, { rough: 0.6 }));
     pcb.position.set(g.cx, y0 + pcbH / 2, g.cz);
@@ -855,6 +1021,78 @@
     });
   }
 
+  /* --- Держатель предохранителя 5×20 на плату, закрытый ----------------
+     Тёмный пластиковый корпус по body, сверху — круглая крышка-цилиндр
+     с накаткой и прорезью под монету/отвёртку: её откручивают, чтобы
+     сменить вставку. Верхняя часть корпуса дымчатая — сквозь неё виден
+     намёк на стеклянную вставку между контактами. Выводы IN/OUT —
+     золочёные пятачки, как у сетевого модуля. --- */
+  function buildFuse(comp, g, y0, add) {
+    var pins = (comp.pins || []).filter(function (p) { return p.hole; });
+    var lift = 1.2;                                     // корпус стоит на выводах
+    var y1 = y0 + lift;
+    var H = Math.max(g.h - lift, 6);
+    var baseH = Math.min(4.5, H * 0.3);                 // глухой цоколь
+    var capH = Math.max(Math.min(4.0, H * 0.22), 2.4);  // крышка
+    var shellH = Math.max(H - baseH - capH, 4);         // дымчатая обечайка
+
+    var base = boxMesh(g.w, baseH, g.d, matStd(0x15181d, { rough: 0.75 }));
+    base.position.set(g.cx, y1 + baseH / 2, g.cz);
+    add(base);
+
+    // стеклянная вставка лежит между выводами — это и есть смысл держателя
+    if (pins.length >= 2) {
+      var A = new THREE.Vector3(hx(pins[0].hole[0]), 0, hz(pins[0].hole[1]));
+      var Bp = new THREE.Vector3(hx(pins[1].hole[0]), 0, hz(pins[1].hole[1]));
+      var gy = y1 + baseH + shellH * 0.42;
+      var dir = new THREE.Vector3().subVectors(Bp, A).normalize();
+      var c = A.clone().lerp(Bp, 0.5).setY(gy);
+      var half = Math.max(A.distanceTo(Bp) / 2 - 1.4, 4);   // вставка 5×20 мм
+      var e1 = c.clone().addScaledVector(dir, -half);
+      var e2 = c.clone().addScaledVector(dir, half);
+      add(spanCylinder(e1, e2, 2.5,
+        matStd(0xf2e3b4, { rough: 0.18, metal: 0.25, opacity: 0.78 }), 16), false);
+      add(spanCylinder(e1, e2, 0.28, matStd(0x8d5a2a, { rough: 0.5, metal: 0.6 }), 6), false);
+      [[e1, dir.clone().negate()], [e2, dir]].forEach(function (pair) {
+        var k = pair[0].clone().addScaledVector(pair[1], -1.4);
+        add(spanCylinder(k, k.clone().addScaledVector(pair[1], 2.8), 2.65,
+          matStd(0xb9bec7, { rough: 0.3, metal: 0.85 }), 16), false);
+      });
+    }
+
+    // обечайка корпуса: дымчатый пластик, сквозь него вставку видно
+    var shell = boxMesh(g.w * 0.88, shellH, g.d * 0.9,
+      matStd(0x23272d, { rough: 0.6, opacity: 0.55 }));
+    shell.position.set(g.cx, y1 + baseH + shellH / 2, g.cz);
+    add(shell);
+    var edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(shell.geometry),
+      new THREE.LineBasicMaterial({ color: 0x0b0e13, transparent: true, opacity: 0.6 })
+    );
+    edges.position.copy(shell.position);
+    add(edges, false);
+
+    // крышка: накатка (гранёный цилиндр) + гладкий верх + прорезь
+    var capR = Math.max(Math.min(g.w, g.d) * 0.30, 3.0);
+    var capY = y1 + baseH + shellH;
+    var knurl = cylMesh(capR, capH * 0.72, matStd(0x2c3138, { rough: 0.45 }), 20);
+    knurl.position.set(g.cx, capY + capH * 0.36, g.cz);
+    add(knurl);
+    var top = cylMesh(capR * 0.94, capH * 0.3, matStd(0x3a4048, { rough: 0.4 }), 24);
+    top.position.set(g.cx, capY + capH * 0.85, g.cz);
+    add(top, false);
+    var slot = boxMesh(capR * 1.5, 0.5, 1.1, matStd(0x0d0f12, { rough: 0.8 }));
+    slot.position.set(g.cx, capY + capH * 0.98, g.cz);
+    add(slot, false);
+
+    // золочёные пятачки выводов — к ним приходят навесные жилы фазы
+    pins.forEach(function (p) {
+      var pad = cylMesh(1.3, 0.35, matStd(COL_GOLD, { rough: 0.35, metal: 0.8 }), 14);
+      pad.position.set(hx(p.hole[0]), y0 + 0.2, hz(p.hole[1]));
+      add(pad, false);
+    });
+  }
+
   /* --- Звезда земли: приплюснутая капля припоя --- */
   function buildJunction(comp, g, y0, add) {
     var r = Math.min(g.w, g.d) * 0.42;
@@ -874,6 +1112,14 @@
      2) все клеммы у ОДНОГО торца (RS-15-12 и родня) — металлический корпус
         с винтовой клеммной полосой во всю ширину этого торца. --- */
   var PSU_PIN_LABEL = { L: 'L', N: 'N', FG: '⏚', '-V': '−V', '+V': '+V' };
+
+  /* Маркировка на крышке — из label компонента, чтобы шелкография во вьюере
+     не расходилась с данными: "IRM-10-12 (220→12 В)" → модель + расшифровка. */
+  function psuMarking(comp) {
+    var s = String(comp.label || '').trim();
+    var m = /^(.*?)\s*\(([^)]*)\)\s*$/.exec(s);
+    return m ? [m[1], m[2]] : [s];
+  }
 
   function buildPsu(comp, g, y0, add) {
     var pins = (comp.pins || []).filter(function (p) { return p.hole; });
@@ -908,7 +1154,7 @@
         new THREE.PlaneGeometry(g.w * 0.6, g.d * 0.4),
         matStd(0xffffff, {
           rough: 0.55,
-          map: textTex(['IRM-10-12', 'AC 220 В → DC 12 В'],
+          map: textTex(psuMarking(comp),
             { bg: '#e9e6dd', fg: '#2c3036', w: 512, h: 160, fs: 46 })
         })
       );
@@ -934,7 +1180,7 @@
     // маркировка на крышке, сдвинута от клеммного торца
     var lab2 = new THREE.Mesh(
       new THREE.PlaneGeometry(g.w * 0.55, g.d * 0.45),
-      matStd(0xffffff, { rough: 0.5, map: textTex(['RS-15-12'], { bg: '#aeb5bc', fg: '#20242a', w: 256, h: 80, fs: 40 }) })
+      matStd(0xffffff, { rough: 0.5, map: textTex([psuMarking(comp)[0]], { bg: '#aeb5bc', fg: '#20242a', w: 256, h: 80, fs: 40 }) })
     );
     lab2.rotation.x = -Math.PI / 2;
     lab2.position.set(g.cx - g.w * 0.12, y0 + h + 0.06, g.cz);
@@ -1017,8 +1263,20 @@
       case 'terminal': return buildTerminal(comp, g, baseY, add);
       case 'junction': return buildJunction(comp, g, baseY, add);
       case 'psu': return buildPsu(comp, g, baseY, add);
+      case 'fuse': return buildFuse(comp, g, baseY, add);
     }
     genericBox(comp, g, baseY, add);   // неизвестный тип — прежний параллелепипед
+  }
+
+  /* Коробка, вытянутая по горизонтальному направлению a → b: длина — по
+     локальной оси Z (равна |ab|), width — поперёк, height — вверх. */
+  function spanBox(a, b, width, height, mat) {
+    var dir = new THREE.Vector3().subVectors(b, a);
+    var len = Math.hypot(dir.x, dir.z) || 0.1;
+    var mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, len), mat);
+    mesh.position.copy(a).addScaledVector(dir, 0.5);
+    mesh.rotation.y = Math.atan2(dir.x, dir.z);
+    return mesh;
   }
 
   // Ставим цилиндр между двумя точками (ось геометрии — Y).
@@ -1098,8 +1356,9 @@
 
     var baseY = TOP;
 
-    // гнездо PBS под модулями — тонкая тёмная подложка
-    if (comp.socket) {
+    // Гнездо PBS под модулями — тонкая тёмная подложка. У вертикального
+    // модуля гребёнка угловая и по габариту другая — её рисует свой билдер.
+    if (comp.socket && comp.mount !== 'vertical') {
       var sock = new THREE.Mesh(
         new THREE.BoxGeometry(g.w + 0.4, 2.6, g.d + 0.4),
         new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.85, metalness: 0.05 })
@@ -1154,6 +1413,25 @@
     return hole[0] <= 1 || hole[0] >= COLS || hole[1] <= 1 || hole[1] >= ROWS;
   }
 
+  /* Самый высокий корпус в габарите маршрута. По нему поднимаем навесные
+     жилы 220 В: держатель предохранителя — 18 мм, сетевой модуль и реле —
+     15 мм, и провод не должен проходить сквозь них. */
+  function pathObstacleHeight(path) {
+    var c1 = Infinity, c2 = -Infinity, r1 = Infinity, r2 = -Infinity;
+    path.forEach(function (p) {
+      c1 = Math.min(c1, p[0]); c2 = Math.max(c2, p[0]);
+      r1 = Math.min(r1, p[1]); r2 = Math.max(r2, p[1]);
+    });
+    var h = 0;
+    (DATA.components || []).forEach(function (c) {
+      if (!c.body) return;
+      var b = rectMetrics(c.body);
+      if (b.c2 < c1 || b.c1 > c2 || b.r2 < r1 || b.r1 > r2) return;
+      h = Math.max(h, c.height || 0);
+    });
+    return h;
+  }
+
   // Точка «уходит за край платы» — продлеваем последний отрезок наружу.
   function offBoardPoint(prev, last, y) {
     var dx = last[0] - prev[0], dy = last[1] - prev[1];
@@ -1186,7 +1464,8 @@
       var pts = [];
 
       if (aerial) {
-        var yArc = TOP + 12 + (hashStr(net.id + ri) % 3) * 1.5;
+        // высота пролёта: выше самого высокого корпуса на пути, минимум 12 мм
+        var yArc = TOP + Math.max(12, pathObstacleHeight(path) + 4) + (hashStr(net.id + ri) % 3) * 1.5;
         var A = new THREE.Vector3(hx(path[0][0]), TOP + 0.15, hz(path[0][1]));
         var Z = new THREE.Vector3(hx(last[0]), TOP + 0.15, hz(last[1]));
         pts.push(A);
@@ -1632,8 +1911,10 @@
      в её центр, а не в центр платы — иначе половина кадра уходит в пустоту. */
   function fitBox() {
     var b = {
+      // сверху запас на самый высокий корпус (SIM800L на ребре — 25 мм)
+      // и его подпись, снизу — на разводку под платой
       x1: -BOARD_W / 2 - 16, x2: BOARD_W / 2 + 16,
-      y1: -14, y2: 26,
+      y1: -14, y2: 32,
       z1: -BOARD_D / 2 - 6, z2: BOARD_D / 2 + 6
     };
     if (gEnclosure.visible) {
@@ -1982,8 +2263,12 @@
     var g = compMetrics(comp);
     var meta = [];
     if (comp.socket) meta.push('гнездо: ' + comp.socket);
-    if (comp.mount) meta.push('крепление: ' + comp.mount);
+    if (comp.mount) meta.push('крепление: ' + (MOUNT_LABEL[comp.mount] || comp.mount));
     if (comp.fit === 'verify') meta.push('шаг выводов проверить прикладыванием');
+    if (comp.clearance) {
+      var cg = rectMetrics(comp.clearance);
+      meta.push('свободный коридор: колонки ' + cg.c1 + '–' + cg.c2 + ', ряды ' + cg.r1 + '–' + cg.r2);
+    }
 
     var html = '<div class="info-title"><h3>' + esc(comp.label) + '</h3>' +
                '<span class="id">' + esc(comp.id) + '</span></div>' +
@@ -1996,6 +2281,10 @@
                (meta.length ? '<br>' + esc(meta.join(' · ')) : '') + '</div>';
 
     if (comp.note) html += '<div class="note">' + esc(comp.note) + '</div>';
+    if (comp.usb && comp.usb.note) {
+      html += '<div class="note"><b style="color:var(--text)">Разъём USB-C:</b> ' +
+              esc(comp.usb.note) + '</div>';
+    }
 
     if (comp.pins && comp.pins.length) {
       html += '<div class="section"><h4>Выводы</h4><table class="pins">' +
@@ -2060,10 +2349,12 @@
   function showZoneInfo(zone) {
     var g = rectMetrics(zone.rect);
     var keepout = zone.kind === 'keepout';
+    var clearance = zone.kind === 'clearance';
     var html = '<div class="info-title"><h3>' + esc(zone.label) + '</h3>' +
                '<span class="id">' + esc(zone.id) + '</span></div>' +
                '<div><span class="tag" style="border-color:' + rampColor(zone.ramp) + '">Зона платы</span>' +
                (keepout ? ' <span class="tag" style="color:#ffb3b5;border-color:var(--danger)">keep-out</span>' : '') +
+               (clearance ? ' <span class="tag">коридор · ничего выше ' + (zone.height || 5) + ' мм</span>' : '') +
                '</div>' +
                '<div class="note' + (keepout ? ' warn' : '') + '">' +
                '<b style="color:var(--text)">Границы:</b> колонки ' + g.c1 + '–' + g.c2 +

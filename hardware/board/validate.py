@@ -81,6 +81,24 @@ def main() -> int:
                 + ", ".join(str(list(m)) for m in sorted(missed))
             )
 
+    # --- краевые полосы: овальные пятачки попарно соединены, ставить туда нельзя ---
+    strip_cols = set(d["board"].get("edgeStrips", {}).get("cols", []))
+    strip_rows = set(d["board"].get("edgeStrips", {}).get("rows", []))
+
+    def on_strip(col, row):
+        return col in strip_cols or row in strip_rows
+
+    if strip_cols or strip_rows:
+        for c in d["components"]:
+            for p in c.get("pins", []):
+                if on_strip(*p["hole"]):
+                    errs.append(f"{c['id']}.{p['name']}: пин на краевой полосе {p['hole']}")
+        for net in d["nets"]:
+            for route in net["routes"]:
+                for col, row in route["path"]:
+                    if on_strip(col, row):
+                        errs.append(f"{net['id']}: точка маршрута на краевой полосе {[col, row]}")
+
     # --- нижний ярус (powerBoards): геометрия каждой платы и уникальность id ---
     comp_ids = {c["id"] for c in d["components"]}
     pb_ids = set()
