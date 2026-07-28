@@ -142,7 +142,7 @@ ${css}
         <label class="check"><input type="checkbox" data-layer="enclosure" checked>
           <i class="sw" style="background:rgba(212,53,59,0.35);border:1px dashed #D4353B"></i><span>Корпус и кабели</span><small>стенки и 220 В</small></label>
         <label class="check"><input type="checkbox" data-layer="case">
-          <i class="sw" style="background:transparent;border:1px dashed #7c8ea3"></i><span>Корпус (контур)</span><small>166×110×75</small></label>
+          <i class="sw" style="background:transparent;border:1px dashed #7c8ea3"></i><span>Корпус (контур)</span><small>160×110×46</small></label>
         <div class="sub-legend">
           <div><i class="sw" style="background:#8A5A2B"></i><span>фаза (L)</span><small>коричневый, через предохранитель и реле</small></div>
           <div><i class="sw" style="background:#3D6FB4"></i><span>ноль (N)</span><small>синий, без коммутации</small></div>

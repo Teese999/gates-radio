@@ -52,6 +52,11 @@
   };
   var NET_CLASS_FALLBACK = { label: 'Прочее', radius: 0.55, depth: 5.6 };
 
+  // 220 В — переменный ток, плюса/минуса нет: жилы красим как в реальном
+  // кабеле — фаза (L) коричневая, ноль (N) синяя. Метка — поле conductor
+  // у mains-цепи или у связи в корпусе.
+  var CONDUCTOR_COLOR = { L: 0x8a5a2b, N: 0x3d6fb4 };
+
   var KIND_LABEL = {
     module: 'Модуль',
     buck: 'Понижайка DC-DC',
@@ -99,6 +104,11 @@
   function rampColor(name) { return RAMP[name] || RAMP[DEFAULT_RAMP]; }
   function rampHex(name) { return parseInt(rampColor(name).slice(1), 16); }
   function netClass(cls) { return NET_CLASS[cls] || NET_CLASS_FALLBACK; }
+  // CSS-цвет цепи для интерфейса: сетевые жилы — по проводнику, остальные — по ramp
+  function netCss(n) {
+    var c = n && n['class'] === 'mains' && CONDUCTOR_COLOR[n.conductor];
+    return c ? '#' + ('00000' + c.toString(16)).slice(-6) : rampColor(n && n.ramp);
+  }
 
   // Индексы для быстрых поисков
   var byComp = {}, byNet = {}, byZone = {}, byEnc = {};
@@ -401,8 +411,9 @@
       border: 'rgba(' + [col >> 16 & 255, col >> 8 & 255, col & 255].join(',') + ',0.85)',
       bg: keepout ? 'rgba(60,10,12,0.88)' : 'rgba(9,12,17,0.78)'
     });
-    // подписи зон висят выше самых высоких корпусов, иначе их закрывают модули
-    lab.position.set(g.cx, TOP + (keepout ? 31 : 25), g.cz);
+    // подписи зон висят выше самых высоких корпусов (конденсатор — 17 мм,
+    // реле и AC-DC модуль — 15 мм), иначе их закрывают модули
+    lab.position.set(g.cx, TOP + (keepout ? 31 : 26), g.cz);
     gZones.add(lab);
     register(lab, { kind: 'zone', id: z.id });
   });
@@ -854,6 +865,137 @@
     add(blob);
   }
 
+  /* --- Сетевой AC-DC модуль на плате. Два непохожих корпуса, выбираем
+     по разводке пинов вдоль длинной оси:
+     1) пины разнесены по двум ПРОТИВОПОЛОЖНЫМ торцам (IRM-10-12, HLK-15M12
+        и другие залитые модули: сеть слева, выход 12 В справа) — глухой
+        залитый кирпич белого пластика с маркировкой сверху; клеммной полосы
+        и винтов у него нет, пины — золочёные пятачки в плате у торцов;
+     2) все клеммы у ОДНОГО торца (RS-15-12 и родня) — металлический корпус
+        с винтовой клеммной полосой во всю ширину этого торца. --- */
+  var PSU_PIN_LABEL = { L: 'L', N: 'N', FG: '⏚', '-V': '−V', '+V': '+V' };
+
+  function buildPsu(comp, g, y0, add) {
+    var pins = (comp.pins || []).filter(function (p) { return p.hole; });
+    var pts = pins.map(function (p) {
+      return { x: hx(p.hole[0]), z: hz(p.hole[1]), name: p.name };
+    });
+
+    // К какому торцу тяготеет каждый пин вдоль длинной оси корпуса
+    var alongX = g.w >= g.d;
+    var nearEnd = 0, farEnd = 0;
+    pts.forEach(function (p) {
+      var t = alongX ? (p.x - (g.cx - g.w / 2)) / g.w : (p.z - (g.cz - g.d / 2)) / g.d;
+      if (t < 0.33) nearEnd++; else if (t > 0.67) farEnd++;
+    });
+
+    if (nearEnd && farEnd) {
+      // Залитый модуль: стоит на своих пинах, под торцами виден зазор с золотом
+      var lift = 2.0;
+      var bh = Math.max(g.h - lift, 8);
+      var body = boxMesh(g.w, bh, g.d, matStd(0xe9e6dd, { rough: 0.5 }));
+      body.position.set(g.cx, y0 + lift + bh / 2, g.cz);
+      add(body);
+      var edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(body.geometry),
+        new THREE.LineBasicMaterial({ color: 0x8e8a80, transparent: true, opacity: 0.55 })
+      );
+      edges.position.copy(body.position);
+      add(edges, false);
+
+      // canvas-маркировка сверху — как шелкография на заливке
+      var lab = new THREE.Mesh(
+        new THREE.PlaneGeometry(g.w * 0.6, g.d * 0.4),
+        matStd(0xffffff, {
+          rough: 0.55,
+          map: textTex(['IRM-10-12', 'AC 220 В → DC 12 В'],
+            { bg: '#e9e6dd', fg: '#2c3036', w: 512, h: 160, fs: 46 })
+        })
+      );
+      lab.rotation.x = -Math.PI / 2;
+      lab.position.set(g.cx, y0 + lift + bh + 0.06, g.cz);
+      add(lab, false);
+
+      // золочёные пятачки у пинов — к ним же приходят навесные жилы 220 В
+      pts.forEach(function (p) {
+        var pad = cylMesh(1.15, 0.3, matStd(COL_GOLD, { rough: 0.35, metal: 0.8 }), 14);
+        pad.position.set(p.x, y0 + 0.18, p.z);
+        add(pad, false);
+      });
+      return;
+    }
+
+    // Клеммная полоса на одном торце (как у RS-15-12): металлический корпус
+    var h = g.h;
+    var body2 = boxMesh(g.w, h, g.d, matStd(0xaeb5bc, { rough: 0.35, metal: 0.7 }));
+    body2.position.set(g.cx, y0 + h / 2, g.cz);
+    add(body2);
+
+    // маркировка на крышке, сдвинута от клеммного торца
+    var lab2 = new THREE.Mesh(
+      new THREE.PlaneGeometry(g.w * 0.55, g.d * 0.45),
+      matStd(0xffffff, { rough: 0.5, map: textTex(['RS-15-12'], { bg: '#aeb5bc', fg: '#20242a', w: 256, h: 80, fs: 40 }) })
+    );
+    lab2.rotation.x = -Math.PI / 2;
+    lab2.position.set(g.cx - g.w * 0.12, y0 + h + 0.06, g.cz);
+    add(lab2, false);
+
+    if (!pts.length) return;
+
+    // Ориентация полосы: пины выстроены вдоль Z (торец «смотрит» вбок) или вдоль X
+    var xs = pts.map(function (p) { return p.x; });
+    var zs = pts.map(function (p) { return p.z; });
+    var alongZ = (Math.max.apply(null, zs) - Math.min.apply(null, zs)) >=
+                 (Math.max.apply(null, xs) - Math.min.apply(null, xs));
+
+    var stripH = 7, stripW = 5.2;
+    var plastic = matStd(0x22262b, { rough: 0.6 });
+    var divider = matStd(0x3a3f46, { rough: 0.55 });
+    var screwMat = matStd(0xc9ced4, { rough: 0.3, metal: 0.7 });
+    var slotMat = matStd(0x14171c, { rough: 0.4 });
+
+    // полоса во всю ширину торца
+    var sx, sz, sw, sd;
+    if (alongZ) {
+      sx = xs.reduce(function (a, b) { return a + b; }) / xs.length;
+      sz = g.cz; sw = stripW; sd = g.d - 1;
+    } else {
+      sx = g.cx;
+      sz = zs.reduce(function (a, b) { return a + b; }) / zs.length;
+      sw = g.w - 1; sd = stripW;
+    }
+    var strip = boxMesh(sw, stripH, sd, plastic);
+    strip.position.set(sx, y0 + stripH / 2, sz);
+    add(strip);
+
+    // перегородки между секциями — на серединах между соседними пинами
+    var ords = pts.map(function (p) { return alongZ ? p.z : p.x; }).sort(function (a, b) { return a - b; });
+    for (var di = 1; di < ords.length; di++) {
+      var mid = (ords[di - 1] + ords[di]) / 2;
+      var wall = alongZ
+        ? boxMesh(sw + 0.4, stripH * 0.92, 0.6, divider)
+        : boxMesh(0.6, stripH * 0.92, sd + 0.4, divider);
+      wall.position.set(alongZ ? sx : mid, y0 + stripH * 0.46, alongZ ? mid : sz);
+      add(wall, false);
+    }
+
+    // винт с прорезью в каждой секции + мелкая подпись клеммы над ней
+    pts.forEach(function (P) {
+      var sc = cylMesh(1.35, 0.9, screwMat, 12);
+      sc.position.set(P.x, y0 + stripH + 0.45, P.z);
+      add(sc, false);
+      var slot = alongZ ? boxMesh(0.45, 0.16, 2.0, slotMat) : boxMesh(2.0, 0.16, 0.45, slotMat);
+      slot.position.set(P.x, y0 + stripH + 0.95, P.z);
+      add(slot, false);
+      var tag = makeLabel(PSU_PIN_LABEL[P.name] || P.name, {
+        size: 2.1, color: '#e8ecf2', bg: 'rgba(20,23,28,0.85)', border: 'rgba(201,206,212,0.5)'
+      });
+      tag.position.set(P.x, y0 + stripH + 3.1, P.z);
+      gLabels.add(tag);
+      register(tag, { kind: 'label', compId: comp.id });
+    });
+  }
+
   function buildComponentBody(comp, g, baseY, grp) {
     function add(mesh, pick) {
       grp.add(mesh);
@@ -874,6 +1016,7 @@
       case 'capacitor': return buildCapacitor(comp, g, baseY, add);
       case 'terminal': return buildTerminal(comp, g, baseY, add);
       case 'junction': return buildJunction(comp, g, baseY, add);
+      case 'psu': return buildPsu(comp, g, baseY, add);
     }
     genericBox(comp, g, baseY, add);   // неизвестный тип — прежний параллелепипед
   }
@@ -998,220 +1141,6 @@
   });
 
   /* ------------------------------------------------------------------ */
-  /*  3b. Нижний ярус этажерки — платы питания (powerBoards)             */
-  /* ------------------------------------------------------------------ */
-
-  var PB = DATA.powerBoards || {};
-  var pbBoards = PB.boards || [];
-  var STACK_GAP = PB.stackGap || 44;     // низ основной платы над дном корпуса
-  var PB_BOSS = 6;                       // бобышки под платами нижнего яруса (case.scad)
-  var floorY = BOT - STACK_GAP;          // внутреннее дно корпуса
-  var powerAnchors = {};                 // id компонента -> точка привязки межъярусных кабелей
-  var compBoard = {};                    // id компонента -> его плата нижнего яруса
-  var powerComps = [];                   // компоненты нижнего яруса по порядку данных
-
-  // Угол основной платы — начало координат для offsetMM нижних плат
-  var mainCornerX = hx(1) - PITCH / 2;
-  var mainCornerZ = hz(1) - PITCH / 2;
-
-  // Сетка отверстий произвольной платы: те же 4 InstancedMesh, что у основной,
-  // и те же материалы — тема и «просветить» применяются ко всем ярусам разом.
-  function addHoleGrid(parent, cols, rows, phx, phz, yTop, yBot) {
-    var n = cols * rows;
-    var ringGeo = new THREE.RingGeometry(0.60, 0.96, 12);
-    var holeGeo = new THREE.CircleGeometry(0.62, 10);
-    var padMat = boardMesh.userData.padMat;
-    var holeMat = boardMesh.userData.holeMat;
-    var padTop = new THREE.InstancedMesh(ringGeo, padMat, n);
-    var padBot = new THREE.InstancedMesh(ringGeo, padMat, n);
-    var holTop = new THREE.InstancedMesh(holeGeo, holeMat, n);
-    var holBot = new THREE.InstancedMesh(holeGeo, holeMat, n);
-    var mUp = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
-    var mDn = new THREE.Matrix4().makeRotationX(Math.PI / 2);
-    var m = new THREE.Matrix4();
-    var i = 0;
-    for (var r = 1; r <= rows; r++) {
-      for (var c = 1; c <= cols; c++) {
-        var x = phx(c), z = phz(r);
-        m.copy(mUp).setPosition(x, yTop + 0.012, z); padTop.setMatrixAt(i, m);
-        m.copy(mUp).setPosition(x, yTop + 0.020, z); holTop.setMatrixAt(i, m);
-        m.copy(mDn).setPosition(x, yBot - 0.012, z); padBot.setMatrixAt(i, m);
-        m.copy(mDn).setPosition(x, yBot - 0.020, z); holBot.setMatrixAt(i, m);
-        i++;
-      }
-    }
-    [padTop, padBot, holTop, holBot].forEach(function (im) {
-      im.instanceMatrix.needsUpdate = true;
-      im.frustumCulled = false;
-      parent.add(im);
-    });
-  }
-
-  /* --- билдеры компонентов нижнего яруса (платы 6x8) --- */
-
-  // Блок питания RS-15-12: металлический корпус, маркировка, клеммная планка у пинов
-  function buildPsuAt(comp, m, yTop, add, holeXZ) {
-    var h = comp.height || 28;
-    var body = boxMesh(m.w, h, m.d, matStd(0xaeb5bc, { rough: 0.35, metal: 0.7 }));
-    body.position.set(m.cx, yTop + h / 2, m.cz);
-    add(body);
-    var lab = new THREE.Mesh(
-      new THREE.PlaneGeometry(m.w * 0.7, m.d * 0.5),
-      matStd(0xffffff, { rough: 0.5, map: textTex(['RS-15-12'], { bg: '#aeb5bc', fg: '#20242a', w: 256, h: 80, fs: 40 }) })
-    );
-    lab.rotation.x = -Math.PI / 2;
-    lab.position.set(m.cx, yTop + h + 0.06, m.cz);
-    add(lab, false);
-    // клеммная планка вдоль ряда пинов + винты над каждым пином
-    var pins = (comp.pins || []).filter(function (p) { return p.hole; });
-    if (pins.length) {
-      var cxs = 0;
-      pins.forEach(function (p) { cxs += holeXZ(p.hole).x; });
-      cxs /= pins.length;
-      var strip = boxMesh(3.6, 6, m.d * 0.92, matStd(0x22262b, { rough: 0.6 }));
-      strip.position.set(cxs, yTop + 3, m.cz);
-      add(strip);
-      pins.forEach(function (p) {
-        var P = holeXZ(p.hole);
-        var sc = cylMesh(1.0, 0.9, matStd(0xc9ced4, { rough: 0.35, metal: 0.6 }), 10);
-        sc.position.set(P.x, yTop + 6.4, P.z);
-        add(sc, false);
-      });
-    }
-  }
-
-  // Колодка ZK-316: полупрозрачный корпус + латунные винты над пинами
-  function buildTermBlockAt(comp, m, yTop, add, holeXZ) {
-    var h = comp.height || 20;
-    var blk = boxMesh(m.w, h * 0.8, m.d, matStd(rampHex(comp.ramp), { rough: 0.6, opacity: 0.35 }));
-    blk.position.set(m.cx, yTop + h * 0.4, m.cz);
-    add(blk);
-    (comp.pins || []).forEach(function (p) {
-      if (!p.hole) return;
-      var P = holeXZ(p.hole);
-      var sc = cylMesh(1.5, 0.9, matStd(0xc9a44a, { rough: 0.35, metal: 0.7 }), 12);
-      sc.position.set(P.x, yTop + h * 0.8 + 0.45, P.z);
-      add(sc, false);
-      var slot = boxMesh(2.2, 0.18, 0.45, matStd(0x14171c, { rough: 0.4 }));
-      slot.position.set(P.x, yTop + h * 0.8 + 0.95, P.z);
-      add(slot, false);
-    });
-  }
-
-  // Площадка разгрузки кабелей: низкий блок и пара стяжек
-  function buildStrainAt(comp, m, yTop, add) {
-    var base = boxMesh(m.w, 2.5, m.d, matStd(0x6a6f75, { rough: 0.8 }));
-    base.position.set(m.cx, yTop + 1.25, m.cz);
-    add(base);
-    [-0.25, 0.25].forEach(function (k) {
-      var strap = boxMesh(1.6, 3.4, m.d * 0.72, matStd(0x14171c, { rough: 0.6 }));
-      strap.position.set(m.cx + m.w * k, yTop + 2.5 + 1.4, m.cz);
-      add(strap, false);
-    });
-  }
-
-  pbBoards.forEach(function (pb) {
-    var cfg = pb.board || {};
-    var cols = cfg.cols || 30, rows = cfg.rows || 22;
-    var pitch = cfg.pitch || PITCH;
-    var thick = cfg.thickness || 1.6;
-    var off = pb.offsetMM || [0, 0];
-    var x0 = mainCornerX + off[0];       // угол платы 6x8 в мире
-    var z0 = mainCornerZ + off[1];
-    var yBot = floorY + PB_BOSS;
-    var yTop = yBot + thick;
-
-    function phx(c) { return x0 + pitch / 2 + (c - 1) * pitch; }
-    function phz(r) { return z0 + pitch / 2 + (r - 1) * pitch; }
-    function holeXZ(h) { return { x: phx(h[0]), z: phz(h[1]) }; }
-    function pRect(rect) {
-      var c1 = Math.min(rect[0], rect[2]), c2 = Math.max(rect[0], rect[2]);
-      var r1 = Math.min(rect[1], rect[3]), r2 = Math.max(rect[1], rect[3]);
-      return {
-        c1: c1, r1: r1, c2: c2, r2: r2,
-        w: (c2 - c1 + 1) * pitch, d: (r2 - r1 + 1) * pitch,
-        cx: (phx(c1) + phx(c2)) / 2, cz: (phz(r1) + phz(r2)) / 2
-      };
-    }
-
-    // текстолит + рёбра — общие материалы с основной платой (тема, «просветить»)
-    var w = cols * pitch, d = rows * pitch;
-    var plate = new THREE.Mesh(new THREE.BoxGeometry(w, thick, d), boardMat);
-    plate.position.set(x0 + w / 2, yBot + thick / 2, z0 + d / 2);
-    gBoard.add(plate);
-    var pe = new THREE.LineSegments(new THREE.EdgesGeometry(plate.geometry), boardEdges.material);
-    pe.position.copy(plate.position);
-    gBoard.add(pe);
-    addHoleGrid(gBoard, cols, rows, phx, phz, yTop, yBot);
-
-    (cfg.mountingHoles || []).forEach(function (h) {
-      var geo = new THREE.RingGeometry(1.6, 2.6, 20);
-      var mat = new THREE.MeshStandardMaterial({ color: 0xc9ccd2, roughness: 0.35, metalness: 0.8, side: THREE.DoubleSide });
-      var ring = new THREE.Mesh(geo, mat);
-      ring.rotation.x = -Math.PI / 2;
-      ring.position.set(phx(h[0]), yTop + 0.03, phz(h[1]));
-      gBoard.add(ring);
-    });
-
-    (pb.components || []).forEach(function (comp) {
-      byComp[comp.id] = comp;
-      compBoard[comp.id] = { boardId: pb.id, boardLabel: pb.label };
-      powerComps.push(comp);
-
-      var grp = new THREE.Group();
-      gComponents.add(grp);
-      function add(mesh, pick) {
-        grp.add(mesh);
-        register(mesh, { kind: 'component', id: comp.id }, { pick: pick !== false });
-        return mesh;
-      }
-
-      var m = pRect(comp.body || [1, 1, 1, 1]);
-      if (comp.kind === 'psu') buildPsuAt(comp, m, yTop, add, holeXZ);
-      else if (comp.kind === 'terminal-block') buildTermBlockAt(comp, m, yTop, add, holeXZ);
-      else if (comp.kind === 'junction') buildStrainAt(comp, m, yTop, add);
-      else {
-        var gen = boxMesh(m.w, Math.max(comp.height || 4, 1), m.d, matStd(rampHex(comp.ramp), { rough: 0.6 }));
-        gen.position.set(m.cx, yTop + (comp.height || 4) / 2, m.cz);
-        add(gen);
-      }
-
-      // золочёные пятачки-пины
-      (comp.pins || []).forEach(function (p) {
-        if (!p.hole) return;
-        var P = holeXZ(p.hole);
-        var pin = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.55, 0.55, 1.8, 8),
-          matStd(COL_GOLD, { rough: 0.35, metal: 0.8 })
-        );
-        pin.position.set(P.x, yTop + 0.9, P.z);
-        grp.add(pin);
-        register(pin, { kind: 'pin', id: comp.id + ':' + p.name, compId: comp.id, netId: p.net, pinName: p.name },
-          { pick: true });
-      });
-
-      // подпись — как у верхнего яруса (мелочь показывается по наведению)
-      var minor = (comp.height || 4) < 8;
-      var lab = makeLabel(comp.label || comp.id, { size: minor ? 3.2 : 3.8 });
-      lab.position.set(m.cx, yTop + (comp.height || 6) + 3.4, m.cz);
-      lab.visible = !minor;
-      gLabels.add(lab);
-      register(lab, { kind: 'label', compId: comp.id, minor: minor });
-
-      // якорь межъярусных кабелей: центроид пинов (или центр тела)
-      var ax = m.cx, az = m.cz, pcnt = 0;
-      (comp.pins || []).forEach(function (p) {
-        if (!p.hole) return;
-        var P = holeXZ(p.hole);
-        if (!pcnt) { ax = 0; az = 0; }
-        ax += P.x; az += P.z; pcnt++;
-      });
-      if (pcnt) { ax /= pcnt; az /= pcnt; }
-      powerAnchors[comp.id] = { x: ax, z: az, y: yTop + Math.min(comp.height || 8, 20) * 0.7 };
-    });
-  });
-
-  /* ------------------------------------------------------------------ */
   /*  4. Провода снизу платы                                             */
   /* ------------------------------------------------------------------ */
 
@@ -1235,7 +1164,9 @@
 
   (DATA.nets || []).forEach(function (net) {
     var cls = netClass(net['class']);
-    var col = rampHex(net.ramp);
+    var mains = net['class'] === 'mains';
+    // сетевые жилы красим как в реальном кабеле (поле conductor), остальное — по ramp
+    var col = (mains && CONDUCTOR_COLOR[net.conductor]) || rampHex(net.ramp);
     var jitter = (hashStr(net.id) % 3) * 0.62;             // разводим цепи по глубине
     var depth = cls.depth + jitter;
     var group = wireGroups[net['class']] || wireGroups.other;
@@ -1244,25 +1175,52 @@
       var path = route.path || [];
       if (path.length < 2) return;
 
-      var pts = [];
-      var yRun = -depth;
-
-      // вертикальный «хвостик» от пятачка вниз, на уровень разводки
-      pts.push(new THREE.Vector3(hx(path[0][0]), BOT - 0.2, hz(path[0][1])));
-      pts.push(new THREE.Vector3(hx(path[0][0]), yRun, hz(path[0][1])));
-
-      for (var i = 1; i < path.length; i++) {
-        var a = path[i - 1], b = path[i];
-        // лёгкий провис в середине отрезка, чтобы пересечения читались
-        pts.push(new THREE.Vector3((hx(a[0]) + hx(b[0])) / 2, yRun - 0.55, (hz(a[1]) + hz(b[1])) / 2));
-        pts.push(new THREE.Vector3(hx(b[0]), yRun, hz(b[1])));
-      }
-
       var last = path[path.length - 1];
-      if (net.offBoard && onEdge(last)) {
-        pts.push(offBoardPoint(path[path.length - 2], last, yRun));
+      var exits = net.offBoard && onEdge(last);   // маршрут уходит за край платы
+
+      /* 220 В по меди платы не разводится: жилы между пятачками идут НАВЕСОМ —
+         дугой в воздухе над компонентами пониже (~12–15 мм над платой).
+         Такой рисуем каждый mains-маршрут, обе точки которого остаются
+         на плате; выходы за край (провода к приводу) — как раньше, вниз. */
+      var aerial = mains && !exits;
+      var pts = [];
+
+      if (aerial) {
+        var yArc = TOP + 12 + (hashStr(net.id + ri) % 3) * 1.5;
+        var A = new THREE.Vector3(hx(path[0][0]), TOP + 0.15, hz(path[0][1]));
+        var Z = new THREE.Vector3(hx(last[0]), TOP + 0.15, hz(last[1]));
+        pts.push(A);
+        // почти вертикальный взлёт у пятачка: провод «выныривает» из клеммы/пина
+        pts.push(new THREE.Vector3(A.x, yArc - 2.4, A.z));
+        if (path.length === 2) {
+          pts.push(new THREE.Vector3((A.x + Z.x) / 2, yArc, (A.z + Z.z) / 2));
+        } else {
+          // дуга через промежуточные точки path — на высоте пролёта
+          for (var k = 1; k < path.length - 1; k++) {
+            pts.push(new THREE.Vector3(hx(path[k][0]), yArc, hz(path[k][1])));
+          }
+        }
+        pts.push(new THREE.Vector3(Z.x, yArc - 2.4, Z.z));
+        pts.push(Z);
       } else {
-        pts.push(new THREE.Vector3(hx(last[0]), BOT - 0.2, hz(last[1])));
+        var yRun = -depth;
+
+        // вертикальный «хвостик» от пятачка вниз, на уровень разводки
+        pts.push(new THREE.Vector3(hx(path[0][0]), BOT - 0.2, hz(path[0][1])));
+        pts.push(new THREE.Vector3(hx(path[0][0]), yRun, hz(path[0][1])));
+
+        for (var i = 1; i < path.length; i++) {
+          var a = path[i - 1], b = path[i];
+          // лёгкий провис в середине отрезка, чтобы пересечения читались
+          pts.push(new THREE.Vector3((hx(a[0]) + hx(b[0])) / 2, yRun - 0.55, (hz(a[1]) + hz(b[1])) / 2));
+          pts.push(new THREE.Vector3(hx(b[0]), yRun, hz(b[1])));
+        }
+
+        if (exits) {
+          pts.push(offBoardPoint(path[path.length - 2], last, yRun));
+        } else {
+          pts.push(new THREE.Vector3(hx(last[0]), BOT - 0.2, hz(last[1])));
+        }
       }
 
       var curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.25);
@@ -1274,14 +1232,15 @@
       group.add(mesh);
       register(mesh, { kind: 'net', id: net.id, routeIndex: ri }, { pick: true });
 
-      // капли припоя в точках пайки
+      // капли припоя в точках пайки (у навесных жил — на верхней стороне платы)
+      var blobY = aerial ? TOP + 0.2 : BOT - 0.35;
       [path[0], last].forEach(function (h) {
         var blob = new THREE.Mesh(
           new THREE.SphereGeometry(cls.radius + 0.55, 10, 8),
           new THREE.MeshStandardMaterial({ color: 0xb9bec7, roughness: 0.28, metalness: 0.85 })
         );
         blob.scale.y = 0.6;
-        blob.position.set(hx(h[0]), BOT - 0.35, hz(h[1]));
+        blob.position.set(hx(h[0]), blobY, hz(h[1]));
         group.add(blob);
         register(blob, { kind: 'net', id: net.id, routeIndex: ri }, { pick: true });
       });
@@ -1295,18 +1254,16 @@
   var ENC_W = 7 * PITCH;      // габарит блока-«призрака» — уже шага между узлами,
   var ENC_D = 5 * PITCH;      // чтобы кабели между ними не слипались
   var ENC_H = 9;
-  // Стеночные узлы (гермовводы, предохранитель) живут на высоте нижнего яруса:
-  // в корпусе-этажерке отверстия в стенках сделаны напротив плат питания.
-  var ENC_BASE = pbBoards.length ? floorY + 8 : TOP;
+  // Стеночные узлы (гермовводы, предохранитель) живут на высоте платы:
+  // этажерки больше нет, отверстия в стенках сделаны напротив её кромки.
+  var ENC_BASE = TOP;
   var ENC_CABLE = ENC_BASE + 3.4;       // высота кабеля между двумя стеночными узлами
-  // Межъярусные кабели идут по зазору между верхом БП и низом основной платы
-  var ENC_RUN = BOT - 5;
+  // Кабели от стенок к плате ныряют под неё: до дна корпуса всего 8 мм
+  // (стойки из case.scad), поэтому пробег — в верхней половине зазора
+  var ENC_RUN = BOT - 3;
 
   var ENC_LINK_COLOR = { mains: rampHex('red'), power: rampHex('amber') };
   var ENC_LINK_RADIUS = { mains: 1.25, power: 0.95 };
-  // 220 В — переменный ток, плюса/минуса нет: кабели красим как реальные жилы,
-  // фаза (L) — коричневая, ноль (N) — синяя. Метка — в link.conductor.
-  var ENC_CONDUCTOR_COLOR = { L: 0x8a5a2b, N: 0x3d6fb4 };
   var encLinkLabels = [];               // подписи кабелей — показываем при наведении/выборе
 
   // Предохранитель рисуем не коробкой, а стеклянной вставкой: он маленький,
@@ -1315,19 +1272,35 @@
     return /предохранит|fuse/i.test((node.label || '') + ' ' + (node.id || ''));
   }
 
-  // Точка привязки кабеля: стеночный узел, компонент нижнего яруса
-  // или компонент основной платы — в этом порядке.
-  function encAnchor(id) {
+  /* Точка на конкретных пинах компонента: "L" — один пин, "NO,COM" — середина
+     между несколькими, если кабель берётся с двух соседних клемм. */
+  function pinPoint(id, pinSpec) {
+    if (!pinSpec) return null;
+    var pts = [];
+    String(pinSpec).split(',').forEach(function (nm) {
+      nm = nm.trim();
+      var c = byComp[id];
+      if (c) (c.pins || []).forEach(function (p) {
+        if (p.name === nm && p.hole) pts.push({ x: hx(p.hole[0]), z: hz(p.hole[1]) });
+      });
+    });
+    if (!pts.length) return null;
+    var x = 0, z = 0;
+    pts.forEach(function (p) { x += p.x; z += p.z; });
+    return { x: x / pts.length, z: z / pts.length };
+  }
+
+  // Точка привязки кабеля: стеночный узел или компонент на плате. pinSpec
+  // (fromPin/toPin из board.json) прицеливает кабель в конкретную клемму
+  // (NO реле, L/N клеммника), а не в центр корпуса.
+  function encAnchor(id, pinSpec) {
     var n = byEnc[id];
     if (n && n.at) return { x: hx(n.at[0]), z: hz(n.at[1]), y: ENC_CABLE, outside: true };
-    if (powerAnchors[id]) {
-      var p = powerAnchors[id];
-      return { x: p.x, z: p.z, y: p.y, outside: false };
-    }
+    var pp = pinPoint(id, pinSpec);
     var c = byComp[id];
     if (c && c.body) {
       var g = rectMetrics(c.body);
-      return { x: g.cx, z: g.cz, y: BOT - 0.3, outside: false };
+      return { x: pp ? pp.x : g.cx, z: pp ? pp.z : g.cz, y: BOT - 0.3, outside: false };
     }
     return null;
   }
@@ -1355,37 +1328,6 @@
         cap.rotation.z = Math.PI / 2;
         cap.position.set(x + dx, ENC_BASE + 3.4, z);
         addE(cap);
-      });
-    } else if (node.id === 'E-PSU') {
-      // блок питания: металлический корпус, маркировка, ряд винтовых клемм с торца
-      var psu = boxMesh(ENC_W, ENC_H, ENC_D, matStd(0xaeb5bc, { rough: 0.35, metal: 0.7, opacity: 0.92 }));
-      psu.position.set(x, ENC_BASE + ENC_H / 2, z);
-      addE(psu);
-      var psuLab = new THREE.Mesh(
-        new THREE.PlaneGeometry(ENC_W * 0.8, ENC_D * 0.55),
-        matStd(0xffffff, { rough: 0.5, map: textTex(['RS-15-12'], { bg: '#aeb5bc', fg: '#20242a', w: 256, h: 80, fs: 40 }) })
-      );
-      psuLab.rotation.x = -Math.PI / 2;
-      psuLab.position.set(x, ENC_BASE + ENC_H + 0.06, z);
-      addE(psuLab, false);
-      for (var t = 0; t < 5; t++) {
-        var term = cylMesh(0.95, 1.4, matStd(0x2e3237, { rough: 0.4, metal: 0.5 }), 10);
-        term.rotation.x = Math.PI / 2;
-        term.position.set(x - ENC_W / 2 + 2.6 + t * ((ENC_W - 5.2) / 4), ENC_BASE + ENC_H * 0.35, z - ENC_D / 2);
-        addE(term, false);
-      }
-    } else if (/^E-BLOCK/.test(node.id)) {
-      // колодка ZK-316: полупрозрачный корпус + два латунных винта сверху
-      var blk = boxMesh(ENC_W, ENC_H * 0.75, ENC_D, matStd(col, { rough: 0.6, opacity: 0.35 }));
-      blk.position.set(x, ENC_BASE + ENC_H * 0.375, z);
-      addE(blk);
-      [-ENC_W * 0.22, ENC_W * 0.22].forEach(function (dx) {
-        var sc = cylMesh(1.5, 0.9, matStd(0xc9a44a, { rough: 0.35, metal: 0.7 }), 12);
-        sc.position.set(x + dx, ENC_BASE + ENC_H * 0.75 + 0.45, z);
-        addE(sc, false);
-        var slot = boxMesh(2.2, 0.18, 0.45, matStd(0x14171c, { rough: 0.4 }));
-        slot.position.set(x + dx, ENC_BASE + ENC_H * 0.75 + 0.95, z);
-        addE(slot, false);
       });
     } else if (node.id === 'E-MAINS') {
       // кабель-ввод: корпус гермоввода, гайка и кабель, уходящий наружу
@@ -1451,7 +1393,7 @@
   });
 
   encLinks.forEach(function (link, idx) {
-    var a = encAnchor(link.from), b = encAnchor(link.to);
+    var a = encAnchor(link.from, link.fromPin), b = encAnchor(link.to, link.toPin);
     if (!a || !b) return;   // ссылка в никуда — молча пропускаем
     var cls = link['class'] === 'power' ? 'power' : 'mains';
     var pts;
@@ -1464,10 +1406,10 @@
         new THREE.Vector3(b.x, b.y, b.z)
       ];
     } else {
-      // Кабель между ярусами/стенкой: вертикаль у обоих концов и горизонтальный
-      // пробег в зазоре между верхом БП и низом основной платы — там пусто,
-      // и трасса не протыкает корпуса компонентов. Лёгкий развод по высоте.
-      var yRun = ENC_RUN - (idx % 4) * 1.1;
+      // Кабель от стенки к плате: вертикаль у обоих концов и горизонтальный
+      // пробег под платой — там только разводка, корпуса не задеваются.
+      // Развод по высоте мелкий: до дна корпуса всего 8 мм.
+      var yRun = ENC_RUN - (idx % 4) * 0.8;
       pts = [
         new THREE.Vector3(a.x, a.y, a.z),
         new THREE.Vector3(a.x, yRun, a.z),
@@ -1478,7 +1420,7 @@
     }
 
     var curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.2);
-    var cableColor = ENC_CONDUCTOR_COLOR[link.conductor] || ENC_LINK_COLOR[cls];
+    var cableColor = CONDUCTOR_COLOR[link.conductor] || ENC_LINK_COLOR[cls];
     var tube = new THREE.Mesh(
       new THREE.TubeGeometry(curve, 60, ENC_LINK_RADIUS[cls], 7, false),
       new THREE.MeshStandardMaterial({ color: cableColor, roughness: 0.5, metalness: 0.1 })
@@ -1507,9 +1449,12 @@
   /*  4c. Контур корпуса (параметры — из hardware/enclosure/case.scad)   */
   /* ------------------------------------------------------------------ */
 
-  // Внутренние габариты 166x110x75, стенка 3, дно 3, крышка 3; основная плата
-  // отцентрована по внутреннему объёму, её низ — на stackGap над дном.
-  var CASE = { inX: 166, inZ2: 110, inZ: 75, wall: 3, floorT: 3, lidT: 3 };
+  // Ревизия r2, низкий профиль: внутренние габариты 160x110x46, стенка 3,
+  // дно 3, крышка 3; плата отцентрована и стоит на стойках 8 мм от дна —
+  // под ней проходит вся разводка (числа — из шапки case.scad).
+  var STANDOFF = 8;                     // стойки основной платы
+  var floorY = BOT - STANDOFF;          // внутреннее дно корпуса
+  var CASE = { inX: 160, inZ2: 110, inZ: 46, wall: 3, floorT: 3, lidT: 3 };
   var CASE_HX = (CASE.inX + CASE.wall * 2) / 2;
   var CASE_HZ = (CASE.inZ2 + CASE.wall * 2) / 2;
 
@@ -1703,7 +1648,6 @@
       });
       b.y1 = Math.min(b.y1, ENC_BASE - 6);
     }
-    if (pbBoards.length) b.y1 = Math.min(b.y1, floorY - 4);
     if (gCase.visible) {
       b.x1 = Math.min(b.x1, -CASE_HX - 2); b.x2 = Math.max(b.x2, CASE_HX + 2);
       b.z1 = Math.min(b.z1, -CASE_HZ - 2); b.z2 = Math.max(b.z2, CASE_HZ + 2);
@@ -2029,7 +1973,7 @@
   function netChip(netId) {
     if (!netId) return '<span style="color:var(--text-mute)">—</span>';
     var n = byNet[netId];
-    var color = n ? rampColor(n.ramp) : '#888780';
+    var color = n ? netCss(n) : '#888780';
     return '<span class="netlink" data-net="' + esc(netId) + '">' +
            '<i class="sw" style="background:' + color + '"></i>' + esc(n ? n.label : netId) + '</span>';
   }
@@ -2041,13 +1985,10 @@
     if (comp.mount) meta.push('крепление: ' + comp.mount);
     if (comp.fit === 'verify') meta.push('шаг выводов проверить прикладыванием');
 
-    var tier = compBoard[comp.id];
     var html = '<div class="info-title"><h3>' + esc(comp.label) + '</h3>' +
                '<span class="id">' + esc(comp.id) + '</span></div>' +
                '<div><span class="tag">' + esc(KIND_LABEL[comp.kind] || comp.kind || 'элемент') + '</span> ' +
-               '<span class="tag">высота ' + esc(g.h) + ' мм</span>' +
-               (tier ? ' <span class="tag" style="border-color:' + RAMP.amber + '">нижний ярус · ' +
-                 esc(tier.boardLabel) + '</span>' : '') + '</div>' +
+               '<span class="tag">высота ' + esc(g.h) + ' мм</span></div>' +
                '<div class="note" style="border-left-color:' + rampColor(comp.ramp) + '">' +
                '<b style="color:var(--text)">Посадочное место:</b> ' +
                'колонки ' + g.c1 + '–' + g.c2 + ', ряды ' + g.r1 + '–' + g.r2 +
@@ -2080,8 +2021,10 @@
     var cls = netClass(net['class']);
     var html = '<div class="info-title"><h3>' + esc(net.label) + '</h3>' +
                '<span class="id">' + esc(net.id) + '</span></div>' +
-               '<div><span class="tag" style="border-color:' + rampColor(net.ramp) + '">' +
+               '<div><span class="tag" style="border-color:' + netCss(net) + '">' +
                esc(cls.label) + '</span>' +
+               (net.conductor ? ' <span class="tag" style="border-color:' + netCss(net) + '">жила ' +
+                 esc(net.conductor === 'L' ? 'L — фаза' : 'N — ноль') + '</span>' : '') +
                (net.wire ? ' <span class="tag">' + esc(net.wire) + '</span>' : '') +
                (net.offBoard ? ' <span class="tag" style="color:#ffb3b5;border-color:var(--danger)">уходит с платы</span>' : '') +
                '</div>';
@@ -2210,7 +2153,11 @@
     activeStep = -1;
     renderSteps();
     renderLists();
-    if (currentView === 'top') hint('Разводка проходит снизу платы — переключись на вид «Снизу».');
+    if (n['class'] === 'mains' && n.conductor) {
+      hint('Сетевая жила идёт навесом над платой — её видно сверху и в изометрии.');
+    } else if (currentView === 'top') {
+      hint('Разводка проходит снизу платы — переключись на вид «Снизу».');
+    }
   }
 
   function selectEnclosure(id) {
@@ -2258,12 +2205,7 @@
              '<span class="id">' + esc(c.id) + '</span></div>';
     }
     var html = '';
-    if (powerComps.length) html += '<div class="list-sub">Основная плата</div>';
     (DATA.components || []).forEach(function (c) { html += compRow(c); });
-    if (powerComps.length) {
-      html += '<div class="list-sub">Нижний ярус</div>';
-      powerComps.forEach(function (c) { html += compRow(c); });
-    }
     elComps.innerHTML = html;
 
     if (elEncl) {
@@ -2282,7 +2224,7 @@
     (DATA.nets || []).forEach(function (n) {
       var on = selection && selection.type === 'net' && selection.id === n.id;
       html += '<div class="row' + (on ? ' on' : '') + '" data-net="' + esc(n.id) + '">' +
-              '<i class="sw" style="background:' + rampColor(n.ramp) + '"></i>' +
+              '<i class="sw" style="background:' + netCss(n) + '"></i>' +
               '<span class="nm">' + esc(n.label) + '</span>' +
               '<span class="id">' + esc(netClass(n['class']).label) + '</span></div>';
     });
@@ -2332,9 +2274,16 @@
     setTab('steps');
     var el = elSteps.querySelector('.step.on');
     if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
-    // если шаг про разводку — подсказать, что смотреть надо снизу
+    // если шаг про разводку — подсказать, где её смотреть: обычные цепи идут
+    // по нижней стороне, а сетевые жилы (mains) — навесом над платой
+    var underNets = (h.nets || []).some(function (id) {
+      var n = byNet[id];
+      return n && n['class'] !== 'mains';
+    });
     if ((h.nets && h.nets.length) && !(h.components && h.components.length) && currentView !== 'bottom') {
-      hint('Шаг про разводку — включи вид «Снизу», провода идут по нижней стороне.');
+      hint(underNets
+        ? 'Шаг про разводку — включи вид «Снизу», провода идут по нижней стороне.'
+        : 'Сетевые жилы идут навесом над платой и за край — смотри сверху или в изометрии.');
     } else {
       hint('');
     }
@@ -2370,9 +2319,12 @@
               '<div class="legend-item"><i class="sw" style="background:transparent;' +
               'border:1px dashed var(--text-dim)"></i><b>Узлы в корпусе</b></div>' +
               '<div class="legend-item"><i class="ln" style="width:18px;height:4px;background:' + RAMP.red +
-              '"></i><b>220 В в корпусе</b></div>' +
-              '<div class="legend-item"><i class="ln" style="width:18px;height:3px;background:' + RAMP.amber +
-              '"></i><b>12 В на плату</b></div>';
+              '"></i><b>220 В в корпусе</b></div>';
+      // строка про 12 В имеет смысл только пока существует внешний БП
+      if (encLinks.some(function (l) { return l['class'] === 'power'; })) {
+        html += '<div class="legend-item"><i class="ln" style="width:18px;height:3px;background:' + RAMP.amber +
+                '"></i><b>12 В на плату</b></div>';
+      }
     }
     elLegend.innerHTML = html;
   }
