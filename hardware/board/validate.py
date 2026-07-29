@@ -27,8 +27,11 @@ def main() -> int:
         x1, y1, x2, y2 = c["body"]
         if not (inside(x1, y1) and inside(x2, y2)):
             errs.append(f"{c['id']}: тело за краем платы {c['body']}")
-        for col in range(x1, x2 + 1):
-            for row in range(y1, y2 + 1):
+        # тела могут иметь дробные границы (габарит не кратен шагу 2.54) —
+        # занятость считаем по накрытым отверстиям
+        from math import ceil, floor
+        for col in range(ceil(x1), floor(x2) + 1):
+            for row in range(ceil(y1), floor(y2) + 1):
                 occupied.setdefault((col, row), []).append(c["id"])
 
     overlaps = {}
