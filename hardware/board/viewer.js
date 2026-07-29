@@ -532,7 +532,7 @@
       gLabels.add(s);
       register(s, { kind: 'label' });
     }
-    for (var c = 5; c <= COLS - 3; c += 5) {
+    for (var c = 5; c <= COLS; c += 5) {
       rl(c, hx(c), -BOARD_D / 2 - 3.5);
       rl(c, hx(c), BOARD_D / 2 + 3.5);
     }

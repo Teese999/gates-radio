@@ -101,12 +101,13 @@ def svg_board(mirror):
     es = d['board'].get('edgeStrips', {})
     strip_rows = set(es.get('rows', []))
     strip_cols = set(es.get('cols', []))
+    # овальные столбцы коротких сторон стоят ВНЕ заводской нумерации (кол. 0 и 56)
+    for c in strip_cols:
+        for r in range(1, ROWS+1):
+            o.append(f"<ellipse cx='{X(c)}' cy='{Y(r)}' rx='2.0' ry='1.1' fill='#b9c8bd'/>")
     for c in range(1, COLS+1):
         for r in range(1, ROWS+1):
-            if c in strip_cols:
-                # овальные пятачки коротких сторон: вытянуты поперёк кромки
-                o.append(f"<ellipse cx='{X(c)}' cy='{Y(r)}' rx='2.0' ry='1.1' fill='#b9c8bd'/>")
-            elif r in strip_rows:
+            if r in strip_rows:
                 o.append(f"<ellipse cx='{X(c)}' cy='{Y(r)}' rx='1.1' ry='2.0' fill='#b9c8bd'/>")
             else:
                 o.append(f"<circle cx='{X(c)}' cy='{Y(r)}' r='1.1' fill='#b9c8bd'/>")
@@ -126,7 +127,7 @@ def svg_board(mirror):
             rgrid = (my - off[1]) / PITCH + 1
             o.append(f"<circle cx='{X(cgrid)}' cy='{Y(rgrid)}' r='{mh.get('diameter',3.2)/2/PITCH*S}' "
                      f"fill='#fff' stroke='#555' stroke-width='1.2'/>")
-    for c in range(5, COLS, 5):
+    for c in range(5, COLS+1, 5):
         o.append(f"<text x='{X(c)}' y='{M-18}' font-size='9' text-anchor='middle' fill='#555'>{c}</text>")
         o.append(f"<text x='{X(c)}' y='{M+(ROWS-1)*S+26}' font-size='9' text-anchor='middle' fill='#555'>{c}</text>")
     for r in range(5, ROWS, 5):
@@ -175,7 +176,7 @@ for n in d['nets']:
     if len(pts) >= 2:
         cont_rows.append((n, pts))
 # Щупы — в ПАЙКИ на нижней стороне платы: пятачки клеммников, узел звезды
-# (ряд 33, колонки 53–57), выводы понижаек и развязки.
+# (ряд 33, колонки 50–54), выводы понижаек и развязки.
 ISOLATION = [
     ('ACIN.L', 'ACIN.N', '∞ — фаза и ноль'),
     ('ACIN.L', 'ACIN.PE', '∞'),
@@ -183,17 +184,17 @@ ISOLATION = [
     ('FU1.OUT', 'ACOUT.OPEN', '∞ — контакт NO K1 разомкнут без питания'),
     ('FU1.OUT', 'ACOUT.CLOSE', '∞ — контакт NO K2 разомкнут'),
     ('ACOUT.OPEN', 'ACOUT.CLOSE', '∞'),
-    ('ACIN.L', 'PWR.+V [50,33]', '∞ — сеть изолирована от 12 В'),
-    ('ACIN.L', 'узел звезды [53,33]', '∞ — сеть изолирована от земли'),
-    ('ACIN.N', 'PWR.+V [50,33]', '∞'),
-    ('ACIN.N', 'узел звезды [53,33]', '∞'),
-    ('PWR.+V [50,33]', 'узел звезды [53,33]', 'не КЗ: >1 кОм; короткий писк заряда конденсаторов — норма'),
-    ('U5.OUT+ [22,24] (5 В)', 'узел звезды [53,33]', 'не КЗ (входы модулей)'),
-    ('U4.OUT+ [4,24] (4 В)', 'узел звезды [53,33]', 'не КЗ'),
-    ('C3.1 [43,6] (3.3 В)', 'узел звезды [53,33]', 'не КЗ'),
-    ('PWR.+V [50,33]', 'U5.OUT+ [22,24]', '∞ / не КЗ — шины разделены понижайкой'),
-    ('PWR.+V [50,33]', 'U4.OUT+ [4,24]', '∞ / не КЗ'),
-    ('U5.OUT+ [22,24]', 'C3.1 [43,6]', '∞ / не КЗ'),
+    ('ACIN.L', 'PWR.+V [48,33]', '∞ — сеть изолирована от 12 В'),
+    ('ACIN.L', 'узел звезды [52,33]', '∞ — сеть изолирована от земли'),
+    ('ACIN.N', 'PWR.+V [48,33]', '∞'),
+    ('ACIN.N', 'узел звезды [52,33]', '∞'),
+    ('PWR.+V [48,33]', 'узел звезды [52,33]', 'не КЗ: >1 кОм; короткий писк заряда конденсаторов — норма'),
+    ('U5.OUT+ [21,24] (5 В)', 'узел звезды [52,33]', 'не КЗ (входы модулей)'),
+    ('U4.OUT+ [3,24] (4 В)', 'узел звезды [52,33]', 'не КЗ'),
+    ('C3.1 [42,6] (3.3 В)', 'узел звезды [52,33]', 'не КЗ'),
+    ('PWR.+V [48,33]', 'U5.OUT+ [21,24]', '∞ / не КЗ — шины разделены понижайкой'),
+    ('PWR.+V [48,33]', 'U4.OUT+ [3,24]', '∞ / не КЗ'),
+    ('U5.OUT+ [21,24]', 'C3.1 [42,6]', '∞ / не КЗ'),
 ]
 
 html = f"""<!doctype html><html lang=ru><meta charset=utf-8>
