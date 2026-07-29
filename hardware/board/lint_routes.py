@@ -24,7 +24,7 @@ import sys
 from math import gcd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ISLAND = (15, 27, 35, 38)  # островок 220: колонки, ряды (заводская нумерация)
+ISLAND = (15, 27, 35, 37)  # островок 220: колонки, ряды (заводская нумерация)
 
 def seg_holes(a, b):
     """Все отверстия на сегменте, включая концы."""

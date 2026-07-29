@@ -115,7 +115,7 @@ def svg_board(mirror):
     letters = es.get('letters')
     if letters:
         pat = letters['pattern']
-        for r in range(1, ROWS+1, 2):
+        for r in range(1, ROWS+1):
             o.append(f"<text x='{X(letters['col']) + (-7 if mirror else 7)}' y='{Y(r)+2.5}' font-size='6' "
                      f"text-anchor='middle' fill='#7d8a93'>{pat[(r-1) % len(pat)]}</text>")
     # крепёжные отверстия (врезаются в край сетки)

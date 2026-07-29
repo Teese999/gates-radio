@@ -545,7 +545,7 @@
     var letters = (B.edgeStrips || {}).letters;
     if (letters && letters.pattern) {
       var pat = letters.pattern;
-      for (var lr = 1; lr <= ROWS; lr += 2) {
+      for (var lr = 1; lr <= ROWS; lr++) {
         var s2 = makeLabel(pat[(lr - 1) % pat.length], { size: 1.9, color: '#8a94a3' });
         s2.position.set(hx(letters.col) + 1.6, TOP + 0.6, hz(lr));
         gLabels.add(s2);
