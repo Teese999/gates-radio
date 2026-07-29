@@ -51,24 +51,24 @@
 <tr><td>3</td><td><i class=sw style='background:#37474F'></i></td><td>МГШВ 0.75 чёрный</td><td class=num>255 мм</td><td><b>STAR.L_PWR</b> → <b>Q2.E</b></td><td>Земля силовая (реле) — луч звезды по СВОЕМУ ряду 25 к левому краю; у юго-западного угла уходит на колонку 4 — мимо крепёжного отверстия</td></tr>
 <tr><td>4</td><td><i class=sw style='background:#78909C'></i></td><td>МГШВ 0.75 чёрный</td><td class=num>190 мм</td><td><b>STAR.L_SIM</b> → <b>U4.IN-</b></td><td>Земля GSM — луч звезды по СВОЕМУ ряду 18 → минус входа понижайки 4 В</td></tr>
 <tr><td>5</td><td><i class=sw style='background:#78909C'></i></td><td>МГШВ 0.75 чёрный</td><td class=num>65 мм</td><td><b>C1.-</b> → <b>U3.GND</b></td><td>Земля GSM — → GND SIM800L, восточнее конденсатора</td></tr>
-<tr><td>6</td><td><i class=sw style='background:#455A64'></i></td><td>МГШВ 0.75 чёрный</td><td class=num>105 мм</td><td><b>U5.OUT-</b> → <b>U1.GND</b></td><td>Земля логики (пара 5 В) — минус выхода понижайки → GND ESP32 (северный ряд), парой с проводом 5 В; к звезде — через минус входа понижайки</td></tr>
-<tr><td>7</td><td><i class=sw style='background:#90A4AE'></i></td><td>МГШВ 0.75 чёрный</td><td class=num>70 мм</td><td><b>U1.GND</b> → <b>U2.GND</b></td><td>Земля радио — GND ESP32 (южный ряд) → GND CC1101 (западная колонка): вниз по колонке 40, затем по ряду 9</td></tr>
+<tr><td>6</td><td><i class=sw style='background:#455A64'></i></td><td>МГШВ 0.75 чёрный</td><td class=num>110 мм</td><td><b>U5.OUT-</b> → <b>U1.GND</b></td><td>Земля логики (пара 5 В) — минус выхода понижайки → GND ESP32 (северный ряд), парой с проводом 5 В; к звезде — через минус входа понижайки</td></tr>
+<tr><td>7</td><td><i class=sw style='background:#90A4AE'></i></td><td>МГШВ 0.75 чёрный</td><td class=num>65 мм</td><td><b>U1.GND</b> → <b>U2.GND</b></td><td>Земля радио — GND ESP32 (южный ряд) → GND CC1101 (западная колонка): вниз по колонке 40, затем по ряду 9</td></tr>
 <tr><td>8</td><td><i class=sw style='background:#F57C00'></i></td><td>МГШВ 0.75 красный</td><td class=num>100 мм</td><td><b>U5.OUT+</b> → <b>U1.5V</b></td><td>+5 В — OUT+ понижайки 5 В (юго-западный угол) → пин 5V ESP32 (северный ряд, у USB-угла)</td></tr>
 <tr><td>9</td><td><i class=sw style='background:#EF5350'></i></td><td>МГШВ 0.75 красный, сдвоить</td><td class=num>85 мм</td><td><b>U4.OUT+</b> → <b>C1.+</b></td><td>+4 В (GSM) — OUT+ понижайки (юго-западный угол) → плюс 2200 мкФ, в обход конденсатора слева</td></tr>
 <tr><td>10</td><td><i class=sw style='background:#EF5350'></i></td><td>МГШВ 0.75 красный, сдвоить</td><td class=num>60 мм</td><td><b>[4,9]</b> → <b>C2.1</b></td><td>+4 В (GSM) — → 100 нФ</td></tr>
 <tr><td>11</td><td><i class=sw style='background:#FFCA28'></i></td><td>МГШВ 0.75 красный</td><td class=num>65 мм</td><td><b>U1.3V3</b> → <b>C3.1</b></td><td>+3.3 В — 3V3 ESP32 (восточный конец северного ряда) → развязка</td></tr>
 <tr><td>12</td><td><i class=sw style='background:#FFCA28'></i></td><td>МГШВ 0.75 красный</td><td class=num>90 мм</td><td><b>[43,2]</b> → <b>U2.VCC</b></td><td>+3.3 В — → VCC CC1101 (восточная колонка разъёма, юго-восточный угол) — по ряду 2 и колонке 51</td></tr>
-<tr><td>13</td><td><i class=sw style='background:#F2C038'></i></td><td>МГТФ / AWG30</td><td class=num>115 мм</td><td><b>U1.IO18</b> → <b>U2.SCK</b></td><td>SPI SCK — лан ряда 17 → колонка 51: восточнее колонки 51 сигнальных вертикалей нет (антенный фид на [55,8])</td></tr>
+<tr><td>13</td><td><i class=sw style='background:#F2C038'></i></td><td>МГТФ / AWG30</td><td class=num>120 мм</td><td><b>U1.IO18</b> → <b>U2.SCK</b></td><td>SPI SCK — лан ряда 17 → колонка 51: восточнее колонки 51 сигнальных вертикалей нет (антенный фид на [55,8])</td></tr>
 <tr><td>14</td><td><i class=sw style='background:#4CAF50'></i></td><td>МГТФ / AWG30</td><td class=num>100 мм</td><td><b>U1.IO19</b> → <b>U2.MISO</b></td><td>SPI MISO — лан ряда 12 → колонка 44, подход к MISO с запада</td></tr>
-<tr><td>15</td><td><i class=sw style='background:#29B6F6'></i></td><td>МГТФ / AWG30</td><td class=num>95 мм</td><td><b>U1.IO23</b> → <b>U2.MOSI</b></td><td>SPI MOSI</td></tr>
-<tr><td>16</td><td><i class=sw style='background:#FF8F2B'></i></td><td>МГТФ / AWG30</td><td class=num>145 мм</td><td><b>U1.IO5</b> → <b>U2.CSN</b></td><td>CC1101 CSN — лан ряда 16 → колонка 46, подход к CSN с запада</td></tr>
-<tr><td>17</td><td><i class=sw style='background:#EC5FA0'></i></td><td>МГТФ / AWG30</td><td class=num>115 мм</td><td><b>U1.IO4</b> → <b>U2.GDO0</b></td><td>CC1101 GDO0 (данные) — лан ряда 14 → подход к GDO0 с запада, под телом модуля</td></tr>
-<tr><td>18</td><td><i class=sw style='background:#8E6BE8'></i></td><td>МГТФ / AWG30</td><td class=num>130 мм</td><td><b>U1.IO2</b> → <b>U2.GDO2</b></td><td>CC1101 GDO2 (клок) — лан ряда 13 → колонка 49 (антенный фидер восточнее не трогаем)</td></tr>
-<tr><td>19</td><td><i class=sw style='background:#1FBFAE'></i></td><td>МГТФ / AWG30</td><td class=num>135 мм</td><td><b>U1.IO16</b> → <b>U3.TXD</b></td><td>GSM TXD → IO16 — IO16 → запад коридором ряда 17, TXD модуля</td></tr>
-<tr><td>20</td><td><i class=sw style='background:#A2C94F'></i></td><td>МГТФ / AWG30</td><td class=num>115 мм</td><td><b>U1.IO17</b> → <b>R3.1</b></td><td>IO17 → 10 кОм — IO17 → верх делителя</td></tr>
+<tr><td>15</td><td><i class=sw style='background:#29B6F6'></i></td><td>МГТФ / AWG30</td><td class=num>85 мм</td><td><b>U1.IO23</b> → <b>U2.MOSI</b></td><td>SPI MOSI</td></tr>
+<tr><td>16</td><td><i class=sw style='background:#FF8F2B'></i></td><td>МГТФ / AWG30</td><td class=num>150 мм</td><td><b>U1.IO5</b> → <b>U2.CSN</b></td><td>CC1101 CSN — лан ряда 16 → колонка 46, подход к CSN с запада</td></tr>
+<tr><td>17</td><td><i class=sw style='background:#EC5FA0'></i></td><td>МГТФ / AWG30</td><td class=num>120 мм</td><td><b>U1.IO4</b> → <b>U2.GDO0</b></td><td>CC1101 GDO0 (данные) — лан ряда 14 → подход к GDO0 с запада, под телом модуля</td></tr>
+<tr><td>18</td><td><i class=sw style='background:#8E6BE8'></i></td><td>МГТФ / AWG30</td><td class=num>135 мм</td><td><b>U1.IO2</b> → <b>U2.GDO2</b></td><td>CC1101 GDO2 (клок) — лан ряда 13 → колонка 49 (антенный фидер восточнее не трогаем)</td></tr>
+<tr><td>19</td><td><i class=sw style='background:#1FBFAE'></i></td><td>МГТФ / AWG30</td><td class=num>140 мм</td><td><b>U1.IO16</b> → <b>U3.TXD</b></td><td>GSM TXD → IO16 — IO16 → запад коридором ряда 17, TXD модуля</td></tr>
+<tr><td>20</td><td><i class=sw style='background:#A2C94F'></i></td><td>МГТФ / AWG30</td><td class=num>120 мм</td><td><b>U1.IO17</b> → <b>R3.1</b></td><td>IO17 → 10 кОм — IO17 → верх делителя</td></tr>
 <tr><td>21</td><td><i class=sw style='background:#0F8B77'></i></td><td>МГТФ / AWG30</td><td class=num>45 мм</td><td><b>R3.2</b> → <b>U3.RXD</b></td><td>RXD после делителя — выход делителя → RXD модуля</td></tr>
-<tr><td>22</td><td><i class=sw style='background:#FF7043'></i></td><td>МГТФ / AWG30</td><td class=num>170 мм</td><td><b>U1.IO12</b> → <b>R1.2</b></td><td>IO12 → база K1 — IO12 → северный коридор → СВОЯ колонка 13 → резистор базы K1</td></tr>
-<tr><td>23</td><td><i class=sw style='background:#B4324F'></i></td><td>МГТФ / AWG30</td><td class=num>190 мм</td><td><b>U1.IO13</b> → <b>R2.2</b></td><td>IO13 → база K2 — IO13 → ряд 2 → СВОЯ колонка 14 → резистор базы K2</td></tr>
+<tr><td>22</td><td><i class=sw style='background:#FF7043'></i></td><td>МГТФ / AWG30</td><td class=num>180 мм</td><td><b>U1.IO12</b> → <b>R1.2</b></td><td>IO12 → база K1 — IO12 → северный коридор → СВОЯ колонка 13 → резистор базы K1</td></tr>
+<tr><td>23</td><td><i class=sw style='background:#B4324F'></i></td><td>МГТФ / AWG30</td><td class=num>185 мм</td><td><b>U1.IO13</b> → <b>R2.2</b></td><td>IO13 → база K2 — IO13 → ряд 2 → СВОЯ колонка 14 → резистор базы K2</td></tr>
 <tr><td>24</td><td><i class=sw style='background:#BA68C8'></i></td><td>перемычка</td><td class=num>40 мм</td><td><b>R2.1</b> → <b>Q2.B</b></td><td>База Q2</td></tr>
 <tr><td>25</td><td><i class=sw style='background:#FFB300'></i></td><td>МГШВ 0.75</td><td class=num>45 мм</td><td><b>D1.A</b> → <b>K1.COIL_A</b></td><td>Катушка K1 — → вывод катушки K1</td></tr>
 <tr><td>26</td><td><i class=sw style='background:#8D6E63'></i></td><td>МГШВ 0.75</td><td class=num>45 мм</td><td><b>D2.A</b> → <b>K2.COIL_A</b></td><td>Катушка K2 — → вывод катушки K2</td></tr>
@@ -2282,46 +2282,46 @@
 <text x='648' y='356' font-size='9' fill='#555'>30</text>
 <text x='14' y='411' font-size='9' text-anchor='end' fill='#555'>35</text>
 <text x='648' y='411' font-size='9' fill='#555'>35</text>
-<rect x='177.39999999999998' y='59.7' width='244.5' height='124.60000000000001' rx='3' fill='none' stroke='#7a8a90' stroke-width='1' stroke-dasharray='3,2'/>
-<text x='299.65' y='57.7' font-size='8' text-anchor='middle' fill='#4a5a60'>U1</text>
-<circle cx='408' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='397' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='386' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='375' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='364' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='353' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='342' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='331' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='320' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='309' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='298' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='287' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='276' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='265' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='254' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='243' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='232' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='221' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='210' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='408' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='397' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='386' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='375' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='364' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='353' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='342' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='331' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='320' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='309' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='298' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='287' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='276' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='265' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='254' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='243' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='232' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='221' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='210' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<rect x='177.39999999999998' y='43.2' width='244.5' height='124.60000000000001' rx='3' fill='none' stroke='#7a8a90' stroke-width='1' stroke-dasharray='3,2'/>
+<text x='299.65' y='41.2' font-size='8' text-anchor='middle' fill='#4a5a60'>U1</text>
+<circle cx='408' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='397' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='386' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='375' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='364' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='353' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='342' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='331' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='320' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='309' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='298' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='287' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='276' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='265' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='254' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='243' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='232' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='221' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='210' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='408' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='397' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='386' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='375' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='364' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='353' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='342' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='331' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='320' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='309' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='298' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='287' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='276' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='265' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='254' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='243' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='232' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='221' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='210' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
 <rect x='30' y='74' width='118' height='63' rx='3' fill='none' stroke='#7a8a90' stroke-width='1' stroke-dasharray='3,2'/>
 <text x='89.0' y='72' font-size='8' text-anchor='middle' fill='#4a5a60'>U2</text>
 <circle cx='133' cy='89' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
@@ -2494,12 +2494,12 @@
 <circle cx='562' cy='177' r='2.6' fill='#aab4bb'/>
 <circle cx='551' cy='177' r='2.6' fill='#aab4bb'/>
 <circle cx='540' cy='177' r='2.6' fill='#aab4bb'/>
-<polyline points='408,232 430,232 430,89 353,89 353,67' fill='none' stroke='#455A64' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='210,177 199,177 199,122 133,122' fill='none' stroke='#90A4AE' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='408,232 430,232 430,89 353,89 353,56' fill='none' stroke='#455A64' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='210,155 199,155 199,122 133,122' fill='none' stroke='#90A4AE' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
 <polyline points='177,111 177,122' fill='none' stroke='#8d979e' stroke-width='3.4' stroke-linecap='round'/>
 <circle cx='177' cy='111' r='2.6' fill='#aab4bb'/>
 <circle cx='177' cy='122' r='2.6' fill='#aab4bb'/>
-<polyline points='408,287 419,287 419,67 408,67' fill='none' stroke='#F57C00' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='408,287 419,287 419,56 408,56' fill='none' stroke='#F57C00' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
 <polyline points='606,287 628,287 628,144 606,144' fill='none' stroke='#EF5350' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
 <polyline points='628,144 628,122 595,122 595,100' fill='none' stroke='#8d979e' stroke-width='3.4' stroke-linecap='round'/>
 <circle cx='628' cy='144' r='2.6' fill='#aab4bb'/>
@@ -2513,23 +2513,23 @@
 <circle cx='595' cy='111' r='2.6' fill='#aab4bb'/>
 <circle cx='595' cy='100' r='2.6' fill='#aab4bb'/>
 <polyline points='595,122 540,122 540,155' fill='none' stroke='#EF5350' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='210,67 210,45 166,45 166,89 177,89' fill='none' stroke='#FFCA28' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='210,56 210,45 166,45 166,89 177,89' fill='none' stroke='#FFCA28' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
 <polyline points='166,45 78,45 78,122 122,122' fill='none' stroke='#FFCA28' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='298,177 298,210 166,210 166,100 133,100' fill='none' stroke='#F2C038' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='287,177 287,155 155,155 155,89 133,89' fill='none' stroke='#4CAF50' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='221,177 221,144 100,144 100,100 122,100' fill='none' stroke='#29B6F6' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='309,177 309,199 67,199 67,111 122,111' fill='none' stroke='#FF8F2B' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='342,177 342,188 144,188 144,111 133,111' fill='none' stroke='#EC5FA0' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='364,177 364,166 111,166 111,89 122,89' fill='none' stroke='#8E6BE8' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='331,177 331,210 474,210 474,111 562,111 562,100' fill='none' stroke='#1FBFAE' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='320,177 320,199 518,199 518,133 529,133' fill='none' stroke='#A2C94F' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='298,155 298,210 166,210 166,100 133,100' fill='none' stroke='#F2C038' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='287,155 287,166 155,166 155,89 133,89' fill='none' stroke='#4CAF50' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='221,155 221,144 100,144 100,100 122,100' fill='none' stroke='#29B6F6' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='309,155 309,199 67,199 67,111 122,111' fill='none' stroke='#FF8F2B' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='342,155 342,188 144,188 144,111 133,111' fill='none' stroke='#EC5FA0' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='364,155 364,177 111,177 111,89 122,89' fill='none' stroke='#8E6BE8' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='331,155 331,210 474,210 474,111 562,111 562,100' fill='none' stroke='#1FBFAE' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='320,155 320,199 518,199 518,133 529,133' fill='none' stroke='#A2C94F' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
 <polyline points='562,133 573,133 573,100' fill='none' stroke='#0F8B77' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
 <polyline points='562,133 562,155' fill='none' stroke='#8d979e' stroke-width='3.4' stroke-linecap='round'/>
 <circle cx='562' cy='133' r='2.6' fill='#aab4bb'/>
 <circle cx='562' cy='144' r='2.6' fill='#aab4bb'/>
 <circle cx='562' cy='155' r='2.6' fill='#aab4bb'/>
-<polyline points='342,67 342,56 507,56 507,342 562,342' fill='none' stroke='#FF7043' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
-<polyline points='364,67 364,45 496,45 496,408 562,408' fill='none' stroke='#B4324F' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='342,56 342,34 507,34 507,342 562,342' fill='none' stroke='#FF7043' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
+<polyline points='364,56 364,45 496,45 496,408 562,408' fill='none' stroke='#B4324F' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round' opacity='0.92'/>
 <polyline points='595,342 617,342' fill='none' stroke='#8d979e' stroke-width='3.4' stroke-linecap='round'/>
 <circle cx='595' cy='342' r='2.6' fill='#aab4bb'/>
 <circle cx='606' cy='342' r='2.6' fill='#aab4bb'/>
@@ -2589,7 +2589,6 @@
 <circle cx='507' cy='199' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='507' cy='298' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='507' cy='309' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
-<circle cx='496' cy='56' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='496' cy='111' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='496' cy='199' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='496' cy='298' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
@@ -2605,26 +2604,25 @@
 <circle cx='419' cy='210' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='419' cy='221' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='419' cy='232' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
-<circle cx='364' cy='56' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
+<circle cx='342' cy='177' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
+<circle cx='331' cy='177' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='331' cy='188' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='331' cy='199' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
+<circle cx='320' cy='177' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='320' cy='188' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='320' cy='364' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
+<circle cx='309' cy='177' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='309' cy='188' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
+<circle cx='298' cy='177' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='298' cy='188' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='298' cy='199' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
-<circle cx='287' cy='166' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='287' cy='386' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='254' cy='298' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
-<circle cx='221' cy='155' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
-<circle cx='221' cy='166' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='199' cy='144' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
-<circle cx='199' cy='155' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
-<circle cx='199' cy='166' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='166' cy='122' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='166' cy='144' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
-<circle cx='166' cy='155' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='166' cy='166' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
+<circle cx='166' cy='177' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='166' cy='188' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='166' cy='199' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='155' cy='100' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
@@ -2632,7 +2630,7 @@
 <circle cx='155' cy='144' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='144' cy='122' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='144' cy='144' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
-<circle cx='144' cy='166' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
+<circle cx='144' cy='177' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='111' cy='100' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='111' cy='111' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
 <circle cx='111' cy='122' r='4.2' fill='none' stroke='#e8a013' stroke-width='1.6'/>
@@ -4836,46 +4834,46 @@
 <text x='648' y='356' font-size='9' fill='#555'>30</text>
 <text x='14' y='411' font-size='9' text-anchor='end' fill='#555'>35</text>
 <text x='648' y='411' font-size='9' fill='#555'>35</text>
-<rect x='240.10000000000002' y='59.7' width='244.5' height='124.60000000000001' rx='3' fill='none' stroke='#7a8a90' stroke-width='1' stroke-dasharray='3,2'/>
-<text x='362.35' y='57.7' font-size='8' text-anchor='middle' fill='#4a5a60'>U1</text>
-<circle cx='254' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='265' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='276' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='287' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='298' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='309' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='320' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='331' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='342' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='353' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='364' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='375' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='386' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='397' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='408' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='419' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='430' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='441' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='452' cy='67' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='254' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='265' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='276' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='287' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='298' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='309' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='320' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='331' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='342' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='353' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='364' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='375' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='386' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='397' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='408' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='419' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='430' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='441' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
-<circle cx='452' cy='177' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<rect x='240.10000000000002' y='43.2' width='244.5' height='124.60000000000001' rx='3' fill='none' stroke='#7a8a90' stroke-width='1' stroke-dasharray='3,2'/>
+<text x='362.35' y='41.2' font-size='8' text-anchor='middle' fill='#4a5a60'>U1</text>
+<circle cx='254' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='265' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='276' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='287' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='298' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='309' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='320' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='331' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='342' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='353' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='364' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='375' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='386' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='397' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='408' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='419' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='430' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='441' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='452' cy='56' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='254' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='265' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='276' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='287' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='298' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='309' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='320' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='331' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='342' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='353' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='364' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='375' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='386' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='397' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='408' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='419' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='430' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='441' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
+<circle cx='452' cy='155' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
 <rect x='514' y='74' width='118' height='63' rx='3' fill='none' stroke='#7a8a90' stroke-width='1' stroke-dasharray='3,2'/>
 <text x='573.0' y='72' font-size='8' text-anchor='middle' fill='#4a5a60'>U2</text>
 <circle cx='529' cy='89' r='2.4' fill='none' stroke='#333' stroke-width='1.1'/>
@@ -5004,7 +5002,7 @@
 <h2>3. Прозвонка после пайки (вилка выдернута, модули НЕ вставлены в гнёзда)</h2>
 <h3>3.1 Должно звониться (0 Ом): точки одной цепи</h3>
 <table><tr><th>Цепь</th><th>Точки — все звонятся между собой</th></tr>
-<tr><td><i class=sw style='background:#616161'></i> Земля — звезда</td><td>U5.IN- [35,19] · STAR.IN [50,33] · STAR.L_BUCK5 [53,33] · STAR.L_SIM [54,33] · STAR.L_PWR [52,34] · PWR.-V [48,36] · LED1.K [42,20]</td></tr><tr><td><i class=sw style='background:#37474F'></i> Земля силовая (реле)</td><td>Q1.E [2,31] · Q2.E [2,37]</td></tr><tr><td><i class=sw style='background:#78909C'></i> Земля GSM</td><td>U3.GND [8,7] · U4.OUT- [3,19] · R4.2 [7,15] · C1.- [3,13] · C2.2 [9,14]</td></tr><tr><td><i class=sw style='background:#455A64'></i> Земля логики (пара 5 В)</td><td>U1.GND [26,4] · U5.OUT- [21,19]</td></tr><tr><td><i class=sw style='background:#90A4AE'></i> Земля радио</td><td>U1.GND [39,14] · U2.GND [46,9] · C3.2 [42,8]</td></tr><tr><td><i class=sw style='background:#F57C00'></i> +5 В</td><td>U1.5V [21,4] · U5.OUT+ [21,24]</td></tr><tr><td><i class=sw style='background:#EF5350'></i> +4 В (GSM)</td><td>U3.VCC [4,7] · U4.OUT+ [3,24] · C1.+ [3,11] · C2.1 [9,12]</td></tr><tr><td><i class=sw style='background:#FFCA28'></i> +3.3 В</td><td>U1.3V3 [39,4] · U2.VCC [47,9] · C3.1 [42,6]</td></tr><tr><td><i class=sw style='background:#F2C038'></i> SPI SCK</td><td>U1.IO18 [31,14] · U2.SCK [46,7]</td></tr><tr><td><i class=sw style='background:#4CAF50'></i> SPI MISO</td><td>U1.IO19 [32,14] · U2.MISO [46,6]</td></tr><tr><td><i class=sw style='background:#29B6F6'></i> SPI MOSI</td><td>U1.IO23 [38,14] · U2.MOSI [47,7]</td></tr><tr><td><i class=sw style='background:#FF8F2B'></i> CC1101 CSN</td><td>U1.IO5 [30,14] · U2.CSN [47,8]</td></tr><tr><td><i class=sw style='background:#EC5FA0'></i> CC1101 GDO0 (данные)</td><td>U1.IO4 [27,14] · U2.GDO0 [46,8]</td></tr><tr><td><i class=sw style='background:#8E6BE8'></i> CC1101 GDO2 (клок)</td><td>U1.IO2 [25,14] · U2.GDO2 [47,6]</td></tr><tr><td><i class=sw style='background:#1FBFAE'></i> GSM TXD → IO16</td><td>U1.IO16 [28,14] · U3.TXD [7,7]</td></tr><tr><td><i class=sw style='background:#A2C94F'></i> IO17 → 10 кОм</td><td>U1.IO17 [29,14] · R3.1 [10,10]</td></tr><tr><td><i class=sw style='background:#0F8B77'></i> RXD после делителя</td><td>U3.RXD [6,7] · R3.2 [7,10] · R4.1 [7,12]</td></tr><tr><td><i class=sw style='background:#FF7043'></i> IO12 → база K1</td><td>U1.IO12 [27,4] · R1.2 [7,29]</td></tr><tr><td><i class=sw style='background:#B4324F'></i> IO13 → база K2</td><td>U1.IO13 [25,4] · R2.2 [7,35]</td></tr><tr><td><i class=sw style='background:#E57373'></i> База Q1</td><td>Q1.B [2,29] · R1.1 [4,29]</td></tr><tr><td><i class=sw style='background:#BA68C8'></i> База Q2</td><td>Q2.B [2,35] · R2.1 [4,35]</td></tr><tr><td><i class=sw style='background:#FFB300'></i> Катушка K1</td><td>K1.COIL_A [11,28] · Q1.C [2,27] · D1.A [8,27]</td></tr><tr><td><i class=sw style='background:#8D6E63'></i> Катушка K2</td><td>K2.COIL_A [11,34] · Q2.C [2,33] · D2.A [8,33]</td></tr><tr><td><i class=sw style='background:#8A5A2B'></i> 220 В: «открыть» к приводу</td><td>K1.NO [15,30] · ACOUT.OPEN [20,35]</td></tr><tr><td><i class=sw style='background:#33363C'></i> 220 В: «закрыть» к приводу</td><td>K2.NO [15,36] · ACOUT.CLOSE [22,35]</td></tr><tr><td><i class=sw style='background:#8A5A2B'></i> 220 В: фаза до предохранителя</td><td>ACIN.L [27,35] · FU1.IN [29,29]</td></tr><tr><td><i class=sw style='background:#3D6FB4'></i> 220 В: ноль (навесом)</td><td>PWR.AC-N [33,32] · ACIN.N [29,35] · ACOUT.COM [24,35]</td></tr><tr><td><i class=sw style='background:#E53935'></i> +12 В (после сетевого модуля)</td><td>U4.IN+ [17,24] · U5.IN+ [35,24] · K1.COIL_B [11,30] · K2.COIL_B [11,36] · D1.K [8,30] · D2.K [8,36] · PWR.+V [48,33] · R6.1 [48,20]</td></tr><tr><td><i class=sw style='background:#8A5A2B'></i> 220 В: фаза после предохранителя</td><td>K1.COM [18,30] · K2.COM [18,36] · PWR.AC-L [33,36] · FU1.OUT [20,29]</td></tr><tr><td><i class=sw style='background:#F06292'></i> LED 12 В (после резистора)</td><td>R6.2 [46,20] · LED1.A [44,20]</td></tr>
+<tr><td><i class=sw style='background:#616161'></i> Земля — звезда</td><td>U5.IN- [35,19] · STAR.IN [50,33] · STAR.L_BUCK5 [53,33] · STAR.L_SIM [54,33] · STAR.L_PWR [52,34] · PWR.-V [48,36] · LED1.K [42,20]</td></tr><tr><td><i class=sw style='background:#37474F'></i> Земля силовая (реле)</td><td>Q1.E [2,31] · Q2.E [2,37]</td></tr><tr><td><i class=sw style='background:#78909C'></i> Земля GSM</td><td>U3.GND [8,7] · U4.OUT- [3,19] · R4.2 [7,15] · C1.- [3,13] · C2.2 [9,14]</td></tr><tr><td><i class=sw style='background:#455A64'></i> Земля логики (пара 5 В)</td><td>U1.GND [26,3] · U5.OUT- [21,19]</td></tr><tr><td><i class=sw style='background:#90A4AE'></i> Земля радио</td><td>U1.GND [39,12] · U2.GND [46,9] · C3.2 [42,8]</td></tr><tr><td><i class=sw style='background:#F57C00'></i> +5 В</td><td>U1.5V [21,3] · U5.OUT+ [21,24]</td></tr><tr><td><i class=sw style='background:#EF5350'></i> +4 В (GSM)</td><td>U3.VCC [4,7] · U4.OUT+ [3,24] · C1.+ [3,11] · C2.1 [9,12]</td></tr><tr><td><i class=sw style='background:#FFCA28'></i> +3.3 В</td><td>U1.3V3 [39,3] · U2.VCC [47,9] · C3.1 [42,6]</td></tr><tr><td><i class=sw style='background:#F2C038'></i> SPI SCK</td><td>U1.IO18 [31,12] · U2.SCK [46,7]</td></tr><tr><td><i class=sw style='background:#4CAF50'></i> SPI MISO</td><td>U1.IO19 [32,12] · U2.MISO [46,6]</td></tr><tr><td><i class=sw style='background:#29B6F6'></i> SPI MOSI</td><td>U1.IO23 [38,12] · U2.MOSI [47,7]</td></tr><tr><td><i class=sw style='background:#FF8F2B'></i> CC1101 CSN</td><td>U1.IO5 [30,12] · U2.CSN [47,8]</td></tr><tr><td><i class=sw style='background:#EC5FA0'></i> CC1101 GDO0 (данные)</td><td>U1.IO4 [27,12] · U2.GDO0 [46,8]</td></tr><tr><td><i class=sw style='background:#8E6BE8'></i> CC1101 GDO2 (клок)</td><td>U1.IO2 [25,12] · U2.GDO2 [47,6]</td></tr><tr><td><i class=sw style='background:#1FBFAE'></i> GSM TXD → IO16</td><td>U1.IO16 [28,12] · U3.TXD [7,7]</td></tr><tr><td><i class=sw style='background:#A2C94F'></i> IO17 → 10 кОм</td><td>U1.IO17 [29,12] · R3.1 [10,10]</td></tr><tr><td><i class=sw style='background:#0F8B77'></i> RXD после делителя</td><td>U3.RXD [6,7] · R3.2 [7,10] · R4.1 [7,12]</td></tr><tr><td><i class=sw style='background:#FF7043'></i> IO12 → база K1</td><td>U1.IO12 [27,3] · R1.2 [7,29]</td></tr><tr><td><i class=sw style='background:#B4324F'></i> IO13 → база K2</td><td>U1.IO13 [25,3] · R2.2 [7,35]</td></tr><tr><td><i class=sw style='background:#E57373'></i> База Q1</td><td>Q1.B [2,29] · R1.1 [4,29]</td></tr><tr><td><i class=sw style='background:#BA68C8'></i> База Q2</td><td>Q2.B [2,35] · R2.1 [4,35]</td></tr><tr><td><i class=sw style='background:#FFB300'></i> Катушка K1</td><td>K1.COIL_A [11,28] · Q1.C [2,27] · D1.A [8,27]</td></tr><tr><td><i class=sw style='background:#8D6E63'></i> Катушка K2</td><td>K2.COIL_A [11,34] · Q2.C [2,33] · D2.A [8,33]</td></tr><tr><td><i class=sw style='background:#8A5A2B'></i> 220 В: «открыть» к приводу</td><td>K1.NO [15,30] · ACOUT.OPEN [20,35]</td></tr><tr><td><i class=sw style='background:#33363C'></i> 220 В: «закрыть» к приводу</td><td>K2.NO [15,36] · ACOUT.CLOSE [22,35]</td></tr><tr><td><i class=sw style='background:#8A5A2B'></i> 220 В: фаза до предохранителя</td><td>ACIN.L [27,35] · FU1.IN [29,29]</td></tr><tr><td><i class=sw style='background:#3D6FB4'></i> 220 В: ноль (навесом)</td><td>PWR.AC-N [33,32] · ACIN.N [29,35] · ACOUT.COM [24,35]</td></tr><tr><td><i class=sw style='background:#E53935'></i> +12 В (после сетевого модуля)</td><td>U4.IN+ [17,24] · U5.IN+ [35,24] · K1.COIL_B [11,30] · K2.COIL_B [11,36] · D1.K [8,30] · D2.K [8,36] · PWR.+V [48,33] · R6.1 [48,20]</td></tr><tr><td><i class=sw style='background:#8A5A2B'></i> 220 В: фаза после предохранителя</td><td>K1.COM [18,30] · K2.COM [18,36] · PWR.AC-L [33,36] · FU1.OUT [20,29]</td></tr><tr><td><i class=sw style='background:#F06292'></i> LED 12 В (после резистора)</td><td>R6.2 [46,20] · LED1.A [44,20]</td></tr>
 </table>
 <h3>3.2 Обязано быть в обрыве / без КЗ</h3>
 <table><tr><th>Щуп 1</th><th>Щуп 2</th><th>Ожидание</th></tr>
