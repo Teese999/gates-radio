@@ -103,6 +103,25 @@ def main() -> int:
                     if on_strip(col, row):
                         errs.append(f"{net['id']}: точка маршрута на краевой полосе {[col, row]}")
 
+    # --- крепёжные отверстия врезаются в сетку: пятачки рядом не использовать ---
+    mh = d["board"].get("mountingHoles")
+    if mh and not isinstance(mh, list):
+        off = d["board"].get("gridOffsetMM", [0, 0])
+        pitch_mm = d["board"]["pitch"]
+        keep = (mh.get("diameter", 3.2) / 2) + 1.2   # радиус запрета до центра пятачка, мм
+        def near_mount(col, row):
+            px, py = off[0] + (col - 1) * pitch_mm, off[1] + (row - 1) * pitch_mm
+            return any((px - x) ** 2 + (py - y) ** 2 < keep ** 2 for x, y in mh.get("positions", []))
+        for c in d["components"]:
+            for p in c.get("pins", []):
+                if near_mount(*p["hole"]):
+                    errs.append(f"{c['id']}.{p['name']}: пин под крепёжным отверстием {p['hole']}")
+        for net in d["nets"]:
+            for route in net["routes"]:
+                for col, row in route["path"]:
+                    if near_mount(col, row):
+                        errs.append(f"{net['id']}: точка маршрута под крепёжным отверстием {[col, row]}")
+
     # --- нижний ярус (powerBoards): геометрия каждой платы и уникальность id ---
     comp_ids = {c["id"] for c in d["components"]}
     pb_ids = set()

@@ -98,14 +98,34 @@ def svg_board(mirror):
     w, h = M*2 + (COLS-1)*S, M*2 + (ROWS-1)*S
     o = [f"<svg viewBox='0 0 {w} {h}' xmlns='http://www.w3.org/2000/svg' font-family='sans-serif'>"]
     o.append(f"<rect x='{M-14}' y='{M-14}' width='{(COLS-1)*S+28}' height='{(ROWS-1)*S+28}' rx='6' fill='#eaf3ec' stroke='#9db8a4'/>")
-    strip_rows = set(d['board'].get('edgeStrips', {}).get('rows', []))
+    es = d['board'].get('edgeStrips', {})
+    strip_rows = set(es.get('rows', []))
+    strip_cols = set(es.get('cols', []))
     for c in range(1, COLS+1):
         for r in range(1, ROWS+1):
-            if r in strip_rows:
-                # овальные пятачки крайних рядов: вытянуты поперёк кромки
+            if c in strip_cols:
+                # овальные пятачки коротких сторон: вытянуты поперёк кромки
+                o.append(f"<ellipse cx='{X(c)}' cy='{Y(r)}' rx='2.0' ry='1.1' fill='#b9c8bd'/>")
+            elif r in strip_rows:
                 o.append(f"<ellipse cx='{X(c)}' cy='{Y(r)}' rx='1.1' ry='2.0' fill='#b9c8bd'/>")
             else:
                 o.append(f"<circle cx='{X(c)}' cy='{Y(r)}' r='1.1' fill='#b9c8bd'/>")
+    # заводские буквы у буквенного (западного) края — ориентир платы
+    letters = es.get('letters')
+    if letters:
+        pat = letters['pattern']
+        for r in range(1, ROWS+1, 2):
+            o.append(f"<text x='{X(letters['col']) + (-7 if mirror else 7)}' y='{Y(r)+2.5}' font-size='6' "
+                     f"text-anchor='middle' fill='#7d8a93'>{pat[(r-1) % len(pat)]}</text>")
+    # крепёжные отверстия (врезаются в край сетки)
+    mh = d['board'].get('mountingHoles', {})
+    if isinstance(mh, dict):
+        off = d['board'].get('gridOffsetMM', [0, 0])
+        for mx, my in mh.get('positions', []):
+            cgrid = (mx - off[0]) / PITCH + 1
+            rgrid = (my - off[1]) / PITCH + 1
+            o.append(f"<circle cx='{X(cgrid)}' cy='{Y(rgrid)}' r='{mh.get('diameter',3.2)/2/PITCH*S}' "
+                     f"fill='#fff' stroke='#555' stroke-width='1.2'/>")
     for c in range(5, COLS, 5):
         o.append(f"<text x='{X(c)}' y='{M-18}' font-size='9' text-anchor='middle' fill='#555'>{c}</text>")
         o.append(f"<text x='{X(c)}' y='{M+(ROWS-1)*S+26}' font-size='9' text-anchor='middle' fill='#555'>{c}</text>")
