@@ -71,7 +71,6 @@
     psu: 'Блок питания',
     fuse: 'Держатель предохранителя',
     'terminal-block': 'Клеммная колодка',
-    testpoint: 'Точка прозвонки',
     led: 'Светодиод'
   };
 
@@ -1182,16 +1181,6 @@
     });
   }
 
-  /* --- Точка прозвонки: петля лужёной проволоки над пятачком ---------- */
-  function buildTestpoint(comp, g, y0, add) {
-    var loop = new THREE.Mesh(
-      new THREE.TorusGeometry(1.5, 0.35, 8, 20, Math.PI),
-      matStd(0xd6b45a, { rough: 0.3, metal: 0.85 })
-    );
-    loop.position.set(g.cx, y0 + 0.4, g.cz);
-    add(loop);
-  }
-
   /* --- Светодиод 3 мм: цилиндр с куполом и ободком --------------------- */
   function buildLed(comp, g, y0, add) {
     var pins = (comp.pins || []).filter(function (p) { return p.hole; });
@@ -1446,7 +1435,6 @@
       case 'junction': return buildJunction(comp, g, baseY, add);
       case 'psu': return buildPsu(comp, g, baseY, add);
       case 'fuse': return buildFuse(comp, g, baseY, add);
-      case 'testpoint': return buildTestpoint(comp, g, baseY, add);
       case 'led': return buildLed(comp, g, baseY, add);
     }
     genericBox(comp, g, baseY, add);   // неизвестный тип — прежний параллелепипед
@@ -1556,7 +1544,10 @@
     // «узнаваемый» корпус по типу компонента (см. билдеры выше)
     buildComponentBody(comp, g, baseY, grp);
 
-    // ножки/пины
+    // ножки/пины сверху + пайка снизу: вывод (или ножка гнезда) проходит
+    // плату насквозь — хвостик и капля припоя на нижней стороне показывают,
+    // где деталь, когда плата перевёрнута для пайки
+    var tailMat = new THREE.MeshStandardMaterial({ color: 0xb9bec7, roughness: 0.3, metalness: 0.8 });
     (comp.pins || []).forEach(function (p) {
       if (!p.hole) return;
       var pin = new THREE.Mesh(
@@ -1567,7 +1558,37 @@
       grp.add(pin);
       register(pin, { kind: 'pin', id: comp.id + ':' + p.name, compId: comp.id, netId: p.net, pinName: p.name },
         { pick: true });
+
+      var tail = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 1.5, 6), tailMat);
+      tail.position.set(hx(p.hole[0]), BOT - 0.75, hz(p.hole[1]));
+      grp.add(tail);
+      register(tail, { kind: 'pin', id: comp.id + ':' + p.name, compId: comp.id, netId: p.net, pinName: p.name },
+        { pick: true });
+      var sold = new THREE.Mesh(new THREE.SphereGeometry(0.85, 8, 6), tailMat);
+      sold.scale.y = 0.5;
+      sold.position.set(hx(p.hole[0]), BOT - 0.18, hz(p.hole[1]));
+      grp.add(sold);
+      register(sold, { kind: 'pin', id: comp.id + ':' + p.name, compId: comp.id, netId: p.net, pinName: p.name });
     });
+
+    // модуль на гребёнке: пунктирный контур гнезда и подпись С НИЖНЕЙ стороны —
+    // при пайке снизу видно, где стоят ESP32 / SIM800L / CC1101
+    if (comp.socket) {
+      var outline = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.PlaneGeometry(g.w + 0.4, g.d + 0.4)),
+        new THREE.LineDashedMaterial({ color: rampHex(comp.ramp), dashSize: 2.2, gapSize: 1.6,
+          transparent: true, opacity: 0.9 })
+      );
+      outline.rotation.x = Math.PI / 2;
+      outline.position.set(g.cx, BOT - 0.08, g.cz);
+      outline.computeLineDistances();
+      grp.add(outline);
+      register(outline, { kind: 'component', id: comp.id });
+      var bl = makeLabel(comp.label, { size: 3.2, color: '#cfd6df' });
+      bl.position.set(g.cx, BOT - 4.2, g.cz);
+      gLabels.add(bl);
+      register(bl, { kind: 'label', compId: comp.id });
+    }
 
     // Подпись компонента. У мелочи (резисторы, диоды, транзисторы) подпись
     // постоянно висеть не должна — иначе центр платы превращается в кашу:
